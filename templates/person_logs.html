@@ -231,6 +231,9 @@
     }
 </style>
 
+<!-- Add data attribute to pass server timezone offset to JavaScript -->
+<div id="logs-container" data-server-timezone-offset="{{ server_timezone_offset }}">
+
 <div class="navigation">
     <a href="{{ url_for('home') }}" class="nav-link">← Back to Dashboard</a>
     <a href="{{ url_for('person_detection_logs') }}" class="nav-link secondary">🔄 Refresh Logs</a>
@@ -271,7 +274,13 @@
         </div>
         <div class="status-item">
             <span class="status-label">Last Detection:</span>
-            <span class="status-value">{{ state.last_detection }}</span>
+            <span class="status-value" data-unix-timestamp="{{ state.last_detection_unix }}">
+                {% if state.last_detection_unix %}
+                    <span class="local-time">{{ state.last_detection }}</span>
+                {% else %}
+                    {{ state.last_detection }}
+                {% endif %}
+            </span>
         </div>
     </div>
     {% endfor %}
@@ -318,6 +327,97 @@
 </div>
 
 <script>
+// Function to convert Unix timestamp to local time
+function convertToLocalTime(unixTimestamp) {
+    if (!unixTimestamp) return null;
+    const date = new Date(unixTimestamp * 1000);
+    // Use 24-hour format
+    return date.toLocaleString('en-GB', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+}
+
+// Convert timestamps to local time on page load
+document.addEventListener('DOMContentLoaded', function() {
+    // Get server timezone offset
+    const logsContainer = document.getElementById('logs-container');
+    const serverTimezoneOffset = parseInt(logsContainer ? logsContainer.getAttribute('data-server-timezone-offset') : '0');
+    
+    // Convert last detection timestamps in status cards
+    const timestampElements = document.querySelectorAll('.status-value[data-unix-timestamp]');
+    timestampElements.forEach(element => {
+        const unixTimestamp = element.getAttribute('data-unix-timestamp');
+        if (unixTimestamp && unixTimestamp !== 'None' && unixTimestamp !== 'null') {
+            const localTime = convertToLocalTime(parseInt(unixTimestamp));
+            if (localTime) {
+                const localTimeSpan = element.querySelector('.local-time');
+                if (localTimeSpan) {
+                    localTimeSpan.textContent = localTime;
+                }
+            }
+        }
+    });
+    
+    // Convert log entry timestamps to local time
+    const logTimestamps = document.querySelectorAll('.log-timestamp');
+    logTimestamps.forEach(element => {
+        const originalTimestamp = element.textContent.trim();
+        if (originalTimestamp && originalTimestamp !== 'None') {
+            try {
+                // Parse the log timestamp format "YYYY-MM-DD HH:MM:SS,mmm"
+                const timestampMatch = originalTimestamp.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})/);
+                if (timestampMatch) {
+                    const dateTimeStr = timestampMatch[1];
+                    const milliseconds = parseInt(timestampMatch[2]);
+                    
+                    // Parse the datetime components
+                    const parts = dateTimeStr.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+                    if (parts) {
+                        const [, year, month, day, hour, minute, second] = parts;
+                        
+                        // Create date object as UTC first (server timestamp)
+                        const serverDate = new Date(Date.UTC(
+                            parseInt(year),
+                            parseInt(month) - 1, // months are 0-indexed in JS
+                            parseInt(day),
+                            parseInt(hour),
+                            parseInt(minute),
+                            parseInt(second),
+                            milliseconds
+                        ));
+                        
+                        // Adjust for server timezone offset (convert from server local time to UTC)
+                        const utcDate = new Date(serverDate.getTime() - (serverTimezoneOffset * 1000));
+                        
+                        if (!isNaN(utcDate.getTime())) {
+                            // Convert to browser local time string using 24-hour format
+                            const localTime = utcDate.toLocaleString('en-GB', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                                hour12: false
+                            });
+                            element.textContent = localTime;
+                        }
+                    }
+                }
+            } catch (error) {
+                // If parsing fails, keep the original timestamp
+                console.log('Failed to parse timestamp:', originalTimestamp, error);
+            }
+        }
+    });
+});
+
 // Auto-refresh every 30 seconds
 setInterval(function() {
     location.reload();
@@ -360,4 +460,5 @@ document.addEventListener('DOMContentLoaded', function() {
 
 console.log('Person detection logs page loaded. Auto-refreshing every 30 seconds.');
 </script>
+</div> <!-- Close logs-container -->
 {% endblock %} 

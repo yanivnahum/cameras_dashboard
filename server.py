@@ -1401,7 +1401,8 @@ def person_gallery(camera_id):
                         images.append({
                             'filename': filename,
                             'timestamp': timestamp,
-                            'formatted_time': timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                            'unix_timestamp': int(timestamp.timestamp()),  # Add Unix timestamp for JS
+                            'formatted_time': timestamp.strftime("%Y-%m-%d %H:%M:%S")  # Keep for fallback
                         })
                 except (ValueError, IndexError) as e:
                     print(f"Error parsing timestamp from {filename}: {e}")
@@ -1409,6 +1410,7 @@ def person_gallery(camera_id):
                     images.append({
                         'filename': filename,
                         'timestamp': None,
+                        'unix_timestamp': None,
                         'formatted_time': 'Unknown'
                     })
         except OSError as e:
@@ -1471,18 +1473,24 @@ def person_detection_logs():
     # Get current detection states
     current_states = {}
     for camera_id, state in person_detection_state.items():
+        last_detection_unix = int(state['last_detection']) if state.get('last_detection') else None
         current_states[camera_id] = {
             'person_present': state.get('person_present', False),
             'detection_count': state.get('detection_count', 0),
             'total_detection_time': state.get('total_detection_time', 0),
             'last_detection': datetime.datetime.fromtimestamp(state['last_detection']).strftime("%Y-%m-%d %H:%M:%S") if state.get('last_detection') else 'Never',
+            'last_detection_unix': last_detection_unix,  # Add Unix timestamp for JS conversion
             'current_session_duration': time.time() - state['session_start'] if state.get('session_start') else 0
         }
+    
+    # Get server timezone offset in seconds from UTC
+    server_timezone_offset = -time.timezone  # timezone is seconds west of UTC, so negate it
     
     return render_template('person_logs.html', 
                          logs=logs, 
                          log_count=len(logs),
-                         current_states=current_states)
+                         current_states=current_states,
+                         server_timezone_offset=server_timezone_offset)
 
 # --- End Person Detection Logic ---
 

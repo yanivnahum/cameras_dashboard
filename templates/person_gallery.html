@@ -176,6 +176,9 @@
     }
 </style>
 
+<!-- Add data attribute to this container to pass image count to JavaScript -->
+<div id="gallery-container" data-image-count="{{ image_count }}">
+
 <div class="navigation">
     <a href="{{ url_for('home') }}" class="nav-link">← Back to Dashboard</a>
     <a href="{{ url_for('view_camera', camera_id=camera_id) }}" class="nav-link secondary">{{ camera_name }} Live View</a>
@@ -203,10 +206,17 @@
                      class="detection-image"
                      data-image-src="{{ url_for('serve_detected_person_image', filename=image.filename) }}"
                      data-timestamp="{{ image.formatted_time }}"
+                     data-unix-timestamp="{{ image.unix_timestamp }}"
                      loading="lazy">
             </div>
             <div class="image-info">
-                <div class="image-timestamp">{{ image.formatted_time }}</div>
+                <div class="image-timestamp" data-unix-timestamp="{{ image.unix_timestamp }}">
+                    {% if image.unix_timestamp %}
+                        <span class="local-time">{{ image.formatted_time }}</span>
+                    {% else %}
+                        {{ image.formatted_time }}
+                    {% endif %}
+                </div>
                 <div class="image-filename">{{ image.filename }}</div>
             </div>
         </div>
@@ -231,6 +241,53 @@
 </div>
 
 <script>
+// Function to convert Unix timestamp to local time
+function convertToLocalTime(unixTimestamp) {
+    if (!unixTimestamp) return null;
+    const date = new Date(unixTimestamp * 1000);
+    // Use 24-hour format
+    return date.toLocaleString('en-GB', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+}
+
+// Convert all timestamps to local time on page load
+document.addEventListener('DOMContentLoaded', function() {
+    // Convert timestamps in image cards
+    const timestampElements = document.querySelectorAll('.image-timestamp[data-unix-timestamp]');
+    timestampElements.forEach(element => {
+        const unixTimestamp = element.getAttribute('data-unix-timestamp');
+        if (unixTimestamp && unixTimestamp !== 'None') {
+            const localTime = convertToLocalTime(parseInt(unixTimestamp));
+            if (localTime) {
+                const localTimeSpan = element.querySelector('.local-time');
+                if (localTimeSpan) {
+                    localTimeSpan.textContent = localTime;
+                }
+            }
+        }
+    });
+    
+    // Update alt text and data-timestamp for images
+    const images = document.querySelectorAll('.detection-image[data-unix-timestamp]');
+    images.forEach(img => {
+        const unixTimestamp = img.getAttribute('data-unix-timestamp');
+        if (unixTimestamp && unixTimestamp !== 'None') {
+            const localTime = convertToLocalTime(parseInt(unixTimestamp));
+            if (localTime) {
+                img.setAttribute('alt', 'Person detected at ' + localTime);
+                img.setAttribute('data-timestamp', localTime);
+            }
+        }
+    });
+});
+
 // Event delegation for image clicks
 document.addEventListener('click', function(event) {
     if (event.target.classList.contains('detection-image')) {
@@ -274,9 +331,14 @@ setTimeout(function() {
 }, 300000); // 5 minutes
 
 // Show a notification about auto-refresh
-var imageCount = {{ image_count }};
-if (imageCount > 0) {
-    console.log('Person gallery will auto-refresh every 5 minutes to show new detections.');
-}
+// Get image count from data attribute set in the template
+document.addEventListener('DOMContentLoaded', function() {
+    const galleryContainer = document.getElementById('gallery-container');
+    const imageCount = parseInt(galleryContainer ? galleryContainer.getAttribute('data-image-count') : '0');
+    if (imageCount > 0) {
+        console.log('Person gallery will auto-refresh every 5 minutes to show new detections.');
+    }
+});
 </script>
+</div> <!-- Close gallery-container -->
 {% endblock %} 
