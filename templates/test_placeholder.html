@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Test Placeholder Image{% endblock %}
+
+{% block additional_styles %}
+.test-container { 
+    margin: 20px 0;
+    text-align: center;
+    padding: 20px;
+    background: #f9f9f9;
+    border-radius: 8px;
+}
+.test-img {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    width: 320px;
+    height: 240px;
+    object-fit: contain;
+    background: white;
+}
+h3 { margin-top: 30px; }
+{% endblock %}
+
+{% block header %}Placeholder Image Test{% endblock %}
+
+{% block content %}
+<h3>Direct Placeholder Image:</h3>
+<div class="test-container">
+    <img src="/placeholder?t=1" class="test-img" alt="Direct Placeholder">
+</div>
+
+<h3>Placeholder with Image Error:</h3>
+<div class="test-container">
+    <img src="/non-existent-image" 
+         onerror="this.src='/placeholder?t=2'" 
+         class="test-img" 
+         alt="Placeholder via onerror">
+</div>
+{% endblock %}
+
+{% block navigation %}
+<a href="/">Back to Dashboard</a>
+<a href="/logout">Logout</a>
+{% endblock %} 

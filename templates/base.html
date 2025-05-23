@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{% block title %}Camera Dashboard{% endblock %}</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 20px; 
+        }
+        h1 { color: #333; }
+        .nav { 
+            margin-top: 20px;
+            text-align: right;
+        }
+        a { 
+            color: #0066cc; 
+            text-decoration: none;
+        }
+        a:hover { 
+            text-decoration: underline; 
+        }
+        .refresh-btn {
+            display: inline-block;
+            margin-left: 15px;
+            padding: 5px 15px;
+            background: #0066cc;
+            color: white;
+            border-radius: 4px;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .refresh-btn:hover {
+            background: #0055aa;
+        }
+        .status-connected { color: green; }
+        .status-disconnected { color: red; }
+        .button-disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        {% block additional_styles %}{% endblock %}
+    </style>
+    {% block scripts %}{% endblock %}
+</head>
+<body>
+    <h1>
+        {% block header %}Camera Dashboard{% endblock %}
+    </h1>
+    
+    <div class="content">
+        {% block content %}{% endblock %}
+    </div>
+    
+    <div class="nav">
+        {% block navigation %}
+        <a href="/">Dashboard</a>
+        <a href="/logout">Logout</a>
+        {% endblock %}
+    </div>
+</body>
+</html> 

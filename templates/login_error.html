@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login Failed</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 20px;
+        }
+        h1 { 
+            color: #333;
+        }
+        .error { 
+            color: #cc0000; 
+            padding: 10px; 
+            background: #fff0f0; 
+            border-radius: 4px; 
+            margin-bottom: 15px;
+        }
+        a { 
+            color: #0066cc; 
+            text-decoration: none;
+        }
+        a:hover { 
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <h1>Login Failed</h1>
+    <p class="error">{{ error_message }}</p>
+    <a href="/login">Try again</a>
+</body>
+</html> 

@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+
+{% block title %}{{ camera_name }} - Person Detection History{% endblock %}
+
+{% block content %}
+<style>
+    .gallery-header {
+        margin-bottom: 2rem;
+        padding-bottom: 1rem;
+        border-bottom: 2px solid #e9ecef;
+    }
+    
+    .gallery-header h1 {
+        color: #333;
+        margin-bottom: 0.5rem;
+    }
+    
+    .gallery-stats {
+        color: #666;
+        font-size: 1.1rem;
+    }
+    
+    .gallery-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 1.5rem;
+        margin-bottom: 2rem;
+    }
+    
+    .image-card {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    
+    .image-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+    }
+    
+    .image-container {
+        position: relative;
+        width: 100%;
+        height: 250px;
+        overflow: hidden;
+        background: #f8f9fa;
+    }
+    
+    .detection-image {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transition: transform 0.3s ease;
+    }
+    
+    .image-card:hover .detection-image {
+        transform: scale(1.05);
+    }
+    
+    .image-info {
+        padding: 1rem;
+    }
+    
+    .image-timestamp {
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 0.5rem;
+        font-size: 0.95rem;
+    }
+    
+    .image-filename {
+        color: #666;
+        font-size: 0.85rem;
+        font-family: 'Courier New', monospace;
+        word-break: break-all;
+    }
+    
+    .no-images {
+        text-align: center;
+        padding: 3rem;
+        color: #666;
+        background: #f8f9fa;
+        border-radius: 12px;
+        margin: 2rem 0;
+    }
+    
+    .no-images i {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+        color: #ccc;
+    }
+    
+    .navigation {
+        margin-bottom: 2rem;
+    }
+    
+    .nav-link {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        margin-right: 1rem;
+        background: #007bff;
+        color: white;
+        text-decoration: none;
+        border-radius: 6px;
+        transition: background-color 0.2s ease;
+    }
+    
+    .nav-link:hover {
+        background: #0056b3;
+        text-decoration: none;
+        color: white;
+    }
+    
+    .nav-link.secondary {
+        background: #6c757d;
+    }
+    
+    .nav-link.secondary:hover {
+        background: #545b62;
+    }
+    
+    .modal {
+        display: none;
+        position: fixed;
+        z-index: 1000;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.8);
+    }
+    
+    .modal-content {
+        position: relative;
+        margin: 5% auto;
+        max-width: 90%;
+        max-height: 90%;
+    }
+    
+    .modal-image {
+        width: 100%;
+        height: auto;
+        border-radius: 8px;
+    }
+    
+    .close {
+        position: absolute;
+        top: -40px;
+        right: 0;
+        color: white;
+        font-size: 35px;
+        font-weight: bold;
+        cursor: pointer;
+    }
+    
+    .close:hover {
+        color: #ccc;
+    }
+    
+    @media (max-width: 768px) {
+        .gallery-grid {
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+        
+        .navigation {
+            text-align: center;
+        }
+        
+        .nav-link {
+            display: block;
+            margin: 0.5rem 0;
+        }
+    }
+</style>
+
+<div class="navigation">
+    <a href="{{ url_for('home') }}" class="nav-link">← Back to Dashboard</a>
+    <a href="{{ url_for('view_camera', camera_id=camera_id) }}" class="nav-link secondary">{{ camera_name }} Live View</a>
+    <a href="{{ url_for('person_detection_logs') }}" class="nav-link secondary">📊 Detection Logs</a>
+</div>
+
+<div class="gallery-header">
+    <h1>{{ camera_name }} - Person Detection History</h1>
+    <div class="gallery-stats">
+        {% if image_count > 0 %}
+            {{ image_count }} detection{{ 's' if image_count != 1 else '' }} found
+        {% else %}
+            No detections recorded yet
+        {% endif %}
+    </div>
+</div>
+
+{% if images %}
+    <div class="gallery-grid">
+        {% for image in images %}
+        <div class="image-card">
+            <div class="image-container">
+                <img src="{{ url_for('serve_detected_person_image', filename=image.filename) }}" 
+                     alt="Person detected at {{ image.formatted_time }}"
+                     class="detection-image"
+                     data-image-src="{{ url_for('serve_detected_person_image', filename=image.filename) }}"
+                     data-timestamp="{{ image.formatted_time }}"
+                     loading="lazy">
+            </div>
+            <div class="image-info">
+                <div class="image-timestamp">{{ image.formatted_time }}</div>
+                <div class="image-filename">{{ image.filename }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+{% else %}
+    <div class="no-images">
+        <div style="font-size: 3rem; margin-bottom: 1rem;">📸</div>
+        <h3>No Person Detections Yet</h3>
+        <p>Person detection images will appear here when the system detects people on {{ camera_name }}.</p>
+        <p>The system checks for persons every 5 minutes automatically.</p>
+    </div>
+{% endif %}
+
+<!-- Modal for full-size image viewing -->
+<div id="imageModal" class="modal" onclick="closeModal()">
+    <span class="close" onclick="closeModal()">&times;</span>
+    <div class="modal-content">
+        <img id="modalImage" class="modal-image">
+        <div style="color: white; text-align: center; margin-top: 1rem; font-size: 1.1rem;" id="modalCaption"></div>
+    </div>
+</div>
+
+<script>
+// Event delegation for image clicks
+document.addEventListener('click', function(event) {
+    if (event.target.classList.contains('detection-image')) {
+        const imageSrc = event.target.getAttribute('data-image-src');
+        const timestamp = event.target.getAttribute('data-timestamp');
+        openModal(imageSrc, timestamp);
+    }
+});
+
+function openModal(imageSrc, timestamp) {
+    const modal = document.getElementById('imageModal');
+    const modalImage = document.getElementById('modalImage');
+    const modalCaption = document.getElementById('modalCaption');
+    
+    modalImage.src = imageSrc;
+    modalCaption.textContent = 'Person detected at ' + timestamp;
+    modal.style.display = 'block';
+    
+    // Prevent body scrolling when modal is open
+    document.body.style.overflow = 'hidden';
+}
+
+function closeModal() {
+    const modal = document.getElementById('imageModal');
+    modal.style.display = 'none';
+    
+    // Restore body scrolling
+    document.body.style.overflow = 'auto';
+}
+
+// Close modal when pressing Escape key
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        closeModal();
+    }
+});
+
+// Auto-refresh the page every 5 minutes to show new detections
+setTimeout(function() {
+    location.reload();
+}, 300000); // 5 minutes
+
+// Show a notification about auto-refresh
+var imageCount = {{ image_count }};
+if (imageCount > 0) {
+    console.log('Person gallery will auto-refresh every 5 minutes to show new detections.');
+}
+</script>
+{% endblock %} 

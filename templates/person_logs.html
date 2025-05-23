@@ -1,0 +1,363 @@
+{% extends "base.html" %}
+
+{% block title %}Person Detection Logs{% endblock %}
+
+{% block content %}
+<style>
+    .logs-header {
+        margin-bottom: 2rem;
+        padding-bottom: 1rem;
+        border-bottom: 2px solid #e9ecef;
+    }
+    
+    .logs-header h1 {
+        color: #333;
+        margin-bottom: 0.5rem;
+    }
+    
+    .logs-stats {
+        color: #666;
+        font-size: 1.1rem;
+    }
+    
+    .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 1rem;
+        margin-bottom: 2rem;
+    }
+    
+    .status-card {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        padding: 1.5rem;
+        border-left: 4px solid #007bff;
+    }
+    
+    .status-card.person-present {
+        border-left-color: #28a745;
+        background: linear-gradient(135deg, #f8fff9 0%, #ffffff 100%);
+    }
+    
+    .status-card.person-absent {
+        border-left-color: #6c757d;
+    }
+    
+    .status-title {
+        font-weight: 600;
+        font-size: 1.2rem;
+        margin-bottom: 1rem;
+        color: #333;
+    }
+    
+    .status-item {
+        margin-bottom: 0.5rem;
+        font-size: 0.95rem;
+    }
+    
+    .status-label {
+        font-weight: 600;
+        color: #666;
+    }
+    
+    .status-value {
+        color: #333;
+    }
+    
+    .status-indicator {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 8px;
+    }
+    
+    .indicator-present {
+        background-color: #28a745;
+        animation: pulse 2s infinite;
+    }
+    
+    .indicator-absent {
+        background-color: #6c757d;
+    }
+    
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    
+    .logs-container {
+        background: #f8f9fa;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 2rem;
+    }
+    
+    .logs-controls {
+        margin-bottom: 1rem;
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    
+    .log-filter {
+        padding: 0.5rem 1rem;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        background: white;
+    }
+    
+    .refresh-btn {
+        padding: 0.5rem 1rem;
+        background: #007bff;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-block;
+    }
+    
+    .refresh-btn:hover {
+        background: #0056b3;
+        text-decoration: none;
+        color: white;
+    }
+    
+    .logs-list {
+        background: #2d3748;
+        color: #e2e8f0;
+        border-radius: 8px;
+        padding: 1rem;
+        max-height: 600px;
+        overflow-y: auto;
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 0.9rem;
+        line-height: 1.4;
+    }
+    
+    .log-entry {
+        margin-bottom: 0.5rem;
+        padding: 0.25rem 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .log-entry:last-child {
+        border-bottom: none;
+    }
+    
+    .log-timestamp {
+        color: #90cdf4;
+        font-weight: bold;
+    }
+    
+    .log-level-INFO {
+        color: #68d391;
+    }
+    
+    .log-level-ERROR {
+        color: #fc8181;
+    }
+    
+    .log-level-WARNING {
+        color: #fbb6ce;
+    }
+    
+    .log-level-DEBUG {
+        color: #cbd5e0;
+    }
+    
+    .log-message {
+        color: #e2e8f0;
+    }
+    
+    .log-emoji {
+        font-size: 1.1em;
+    }
+    
+    .navigation {
+        margin-bottom: 2rem;
+    }
+    
+    .nav-link {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        margin-right: 1rem;
+        background: #007bff;
+        color: white;
+        text-decoration: none;
+        border-radius: 6px;
+        transition: background-color 0.2s ease;
+    }
+    
+    .nav-link:hover {
+        background: #0056b3;
+        text-decoration: none;
+        color: white;
+    }
+    
+    .nav-link.secondary {
+        background: #6c757d;
+    }
+    
+    .nav-link.secondary:hover {
+        background: #545b62;
+    }
+    
+    .no-logs {
+        text-align: center;
+        color: #666;
+        font-style: italic;
+        padding: 2rem;
+    }
+    
+    @media (max-width: 768px) {
+        .status-grid {
+            grid-template-columns: 1fr;
+        }
+        
+        .logs-controls {
+            flex-direction: column;
+            align-items: stretch;
+        }
+        
+        .log-filter, .refresh-btn {
+            width: 100%;
+            margin-bottom: 0.5rem;
+        }
+    }
+</style>
+
+<div class="navigation">
+    <a href="{{ url_for('home') }}" class="nav-link">← Back to Dashboard</a>
+    <a href="{{ url_for('person_detection_logs') }}" class="nav-link secondary">🔄 Refresh Logs</a>
+</div>
+
+<div class="logs-header">
+    <h1>📊 Person Detection Logs</h1>
+    <div class="logs-stats">
+        {{ log_count }} recent log entries
+    </div>
+</div>
+
+<!-- Current Status Cards -->
+<div class="status-grid">
+    {% for camera_id, state in current_states.items() %}
+    <div class="status-card {{ 'person-present' if state.person_present else 'person-absent' }}">
+        <div class="status-title">
+            <span class="status-indicator {{ 'indicator-present' if state.person_present else 'indicator-absent' }}"></span>
+            {{ camera_id|title }}
+        </div>
+        <div class="status-item">
+            <span class="status-label">Status:</span>
+            <span class="status-value">
+                {% if state.person_present %}
+                    🚶 Person Present ({{ "%.1f"|format(state.current_session_duration) }}s)
+                {% else %}
+                    👁️ No Person Detected
+                {% endif %}
+            </span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Total Sessions:</span>
+            <span class="status-value">{{ state.detection_count }}</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Total Detection Time:</span>
+            <span class="status-value">{{ "%.1f"|format(state.total_detection_time) }}s ({{ "%.1f"|format(state.total_detection_time/60) }} min)</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Last Detection:</span>
+            <span class="status-value">{{ state.last_detection }}</span>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Logs Container -->
+<div class="logs-container">
+    <div class="logs-controls">
+        <select class="log-filter" id="logLevelFilter">
+            <option value="">All Levels</option>
+            <option value="INFO">Info</option>
+            <option value="ERROR">Error</option>
+            <option value="WARNING">Warning</option>
+            <option value="DEBUG">Debug</option>
+        </select>
+        <select class="log-filter" id="cameraFilter">
+            <option value="">All Cameras</option>
+            <option value="camera1">Camera 1</option>
+            <option value="camera2">Camera 2</option>
+        </select>
+        <a href="{{ url_for('person_detection_logs') }}" class="refresh-btn">🔄 Refresh</a>
+    </div>
+    
+    {% if logs %}
+    <div class="logs-list" id="logsList">
+        {% for log in logs %}
+        <div class="log-entry" data-original="{{ log }}">
+            {% set parts = log.split(' - ') %}
+            {% if parts|length >= 4 %}
+                <span class="log-timestamp">{{ parts[0] }}</span> - 
+                <span class="log-level-{{ parts[2] }}">{{ parts[2] }}</span> - 
+                <span class="log-message">{{ parts[3:] | join(' - ') }}</span>
+            {% else %}
+                <span class="log-message">{{ log }}</span>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="no-logs">
+        📝 No logs available yet. Person detection system may be starting up.
+    </div>
+    {% endif %}
+</div>
+
+<script>
+// Auto-refresh every 30 seconds
+setInterval(function() {
+    location.reload();
+}, 30000);
+
+// Filter functionality
+document.getElementById('logLevelFilter').addEventListener('change', filterLogs);
+document.getElementById('cameraFilter').addEventListener('change', filterLogs);
+
+function filterLogs() {
+    const levelFilter = document.getElementById('logLevelFilter').value;
+    const cameraFilter = document.getElementById('cameraFilter').value;
+    const logEntries = document.querySelectorAll('.log-entry');
+    
+    logEntries.forEach(entry => {
+        const originalText = entry.getAttribute('data-original');
+        let showEntry = true;
+        
+        // Filter by log level
+        if (levelFilter && !originalText.includes(' - ' + levelFilter + ' - ')) {
+            showEntry = false;
+        }
+        
+        // Filter by camera
+        if (cameraFilter && !originalText.includes(cameraFilter)) {
+            showEntry = false;
+        }
+        
+        entry.style.display = showEntry ? 'block' : 'none';
+    });
+}
+
+// Scroll to bottom initially
+document.addEventListener('DOMContentLoaded', function() {
+    const logsList = document.getElementById('logsList');
+    if (logsList) {
+        logsList.scrollTop = logsList.scrollHeight;
+    }
+});
+
+console.log('Person detection logs page loaded. Auto-refreshing every 30 seconds.');
+</script>
+{% endblock %} 

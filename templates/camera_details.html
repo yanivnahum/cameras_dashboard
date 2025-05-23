@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}Camera Details{% endblock %}
+
+{% block additional_styles %}
+table { 
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+th, td { 
+    padding: 12px 15px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+th { 
+    background-color: #f5f5f5;
+    color: #333;
+    font-weight: bold;
+}
+tr:hover { background-color: #f9f9f9; }
+.no-cameras { 
+    text-align: center;
+    padding: 30px;
+    color: #666;
+}
+.action-btn {
+    display: inline-block;
+    padding: 5px 10px;
+    background: #0066cc;
+    color: white;
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 14px;
+    margin-right: 5px;
+}
+.check-btn {
+    padding: 5px 10px;
+    background: #f0f0f0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+.check-btn:hover {
+    background: #e0e0e0;
+}
+.action-btn:hover {
+    background: #0055aa;
+    text-decoration: none;
+}
+.check-all-btn {
+    display: inline-block;
+    margin-left: 15px;
+    padding: 5px 15px;
+    background: #5cb85c;
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+.check-all-btn:hover {
+    background: #4cae4c;
+}
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function checkCamera(cameraId, port) {
+        const statusCell = document.getElementById('status-' + cameraId);
+        if (statusCell) {
+            statusCell.textContent = 'Checking...';
+            statusCell.className = '';
+            
+            fetch('/check-camera/' + cameraId)
+            .then(response => response.json())
+            .then(data => {
+                if (data.connected) {
+                    statusCell.textContent = 'Connected';
+                    statusCell.className = 'status-connected';
+                } else {
+                    statusCell.textContent = 'Disconnected';
+                    statusCell.className = 'status-disconnected';
+                }
+            })
+            .catch(err => {
+                console.error('Error checking camera:', err);
+                statusCell.textContent = 'Error';
+                statusCell.className = 'status-disconnected';
+            });
+        }
+    }
+    
+    function checkAllCameras() {
+        const rows = document.querySelectorAll('[id^="camera-row-"]');
+        rows.forEach(row => {
+            const cameraId = row.id.replace('camera-row-', '');
+            const port = row.children[2].textContent;
+            checkCamera(cameraId, port);
+        });
+    }
+</script>
+{% endblock %}
+
+{% block header %}
+Camera Details
+<a href="/camera-details?refresh=1" class="refresh-btn">Refresh</a>
+<button class="check-all-btn" onclick="checkAllCameras()">Check All</button>
+{% endblock %}
+
+{% block content %}
+<p>Detected cameras on the network:</p>
+
+<table>
+    <thead>
+        <tr>
+            <th>Camera Name</th>
+            <th>Camera ID</th>
+            <th>Port</th>
+            <th>Status</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% if cameras %}
+            {% for camera_id, camera in cameras.items() %}
+                <tr id="camera-row-{{ camera_id }}">
+                    <td>{{ camera.name }}</td>
+                    <td>{{ camera_id }}</td>
+                    <td>{{ camera.port }}</td>
+                    <td id="status-{{ camera_id }}" class="{% if camera.is_connected %}status-connected{% else %}status-disconnected{% endif %}">
+                        {% if camera.is_connected %}Connected{% else %}Disconnected{% endif %}
+                    </td>
+                    <td>
+                        <a href="/camera/{{ camera_id }}" class="action-btn">View Stream</a>
+                        <button class="check-btn" onclick="checkCamera('{{ camera_id }}', {{ camera.port }})">Check</button>
+                    </td>
+                </tr>
+            {% endfor %}
+        {% else %}
+            <tr>
+                <td colspan="5" class="no-cameras">No cameras found. Make sure cameras are connected on ports 10001-10100.</td>
+            </tr>
+        {% endif %}
+    </tbody>
+</table>
+{% endblock %}
+
+{% block navigation %}
+<a href="/">Back to Dashboard</a>
+<a href="/logout">Logout</a>
+{% endblock %} 

@@ -1,0 +1,7 @@
+server_venv/*
+
+detected_persons/*
+*.log
+*.jpg
+
+image.jpg
