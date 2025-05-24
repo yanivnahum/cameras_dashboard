@@ -10,6 +10,18 @@ import hashlib
 import secrets
 import uuid # Added for unique IDs
 import logging
+import atexit
+import fcntl
+import sys
+
+# Optional psutil import for process monitoring
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    print("Warning: psutil not available. Process monitoring features will be limited.")
+
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 import cv2
@@ -20,15 +32,15 @@ from google.genai import types
 app = Flask(__name__)
 # Use a strong random secret key
 app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
-# Set session to expire after 1 hour by default
-app.permanent_session_lifetime = datetime.timedelta(hours=1)
+# Set session to expire after the longer duration to let our custom logic handle timeouts
+app.permanent_session_lifetime = datetime.timedelta(days=30)  # Use the longer duration
 
 # Configure logging for person detection
 logging.basicConfig(level=logging.INFO)
 
 # Create a dedicated logger for person detection
 person_logger = logging.getLogger('person_detection')
-person_logger.setLevel(logging.INFO)
+person_logger.setLevel(logging.DEBUG)
 
 # Create file handler for person detection logs
 if not os.path.exists('logs'):
@@ -84,6 +96,21 @@ PERSON_IMAGE_DIR = 'detected_persons'
 # Stores {'camera_id': {'person_present': bool, 'last_detection': timestamp, 'first_detection': timestamp, 'detection_count': int}}
 person_detection_state = {}
 
+# Image save rate limiting - minimum time between saves when person is continuously present (in seconds)
+MIN_IMAGE_SAVE_INTERVAL = 60  # Save image at most every 60 seconds when person is continuously present
+
+# Per-camera locks for thread-safe person detection
+camera_detection_locks = {}
+camera_lock_creation_lock = threading.Lock()
+
+def get_camera_lock(camera_id):
+    """Get or create a lock for the specified camera_id in a thread-safe manner."""
+    with camera_lock_creation_lock:
+        if camera_id not in camera_detection_locks:
+            camera_detection_locks[camera_id] = threading.Lock()
+            person_logger.debug(f"Created detection lock for {camera_id}")
+        return camera_detection_locks[camera_id]
+
 # Rate limiting
 def is_rate_limited(ip):
     current_time = time.time()
@@ -120,17 +147,28 @@ def login_required(f):
         
         # Check for session timeout
         last_active = session.get('last_active', 0)
+        session_created = session.get('session_created', 0)
         current_time = time.time()
         
         # If remember_me is set, use the longer timeout
         if session.get('remember_me', False):
-            timeout = REMEMBER_ME_LIFETIME.total_seconds()
+            inactivity_timeout = REMEMBER_ME_LIFETIME.total_seconds()
+            absolute_timeout = REMEMBER_ME_LIFETIME.total_seconds()
         else:
-            timeout = DEFAULT_SESSION_LIFETIME.total_seconds()
+            inactivity_timeout = DEFAULT_SESSION_LIFETIME.total_seconds()
+            absolute_timeout = DEFAULT_SESSION_LIFETIME.total_seconds()
             
-        # Check if session has timed out
-        if current_time - last_active > timeout:
-            print(f"Session timeout for {session['username']} after {current_time - last_active} seconds")
+        # Check if session has timed out due to inactivity
+        time_since_last_active = current_time - last_active
+        if time_since_last_active > inactivity_timeout:
+            print(f"Session timeout due to inactivity for {session['username']} after {time_since_last_active} seconds")
+            session.clear()
+            return redirect(url_for('login'))
+            
+        # Check if session has exceeded absolute lifetime (for security)
+        time_since_creation = current_time - session_created
+        if time_since_creation > absolute_timeout:
+            print(f"Session timeout due to absolute lifetime for {session['username']} after {time_since_creation} seconds")
             session.clear()
             return redirect(url_for('login'))
             
@@ -1016,12 +1054,15 @@ def login():
                 session.permanent = True
                 session['username'] = username
                 session['last_active'] = time.time()
+                session['session_created'] = time.time()  # Track when session was created
                 session['ip'] = request.remote_addr
                 session['user_agent'] = request.user_agent.string
                 session['remember_me'] = remember_me
                 
                 # Log the successful login
+                session_lifetime = REMEMBER_ME_LIFETIME if remember_me else DEFAULT_SESSION_LIFETIME
                 print(f"Successful login: {username} from {request.remote_addr} (Remember me: {remember_me})")
+                print(f"Session will expire after: {session_lifetime}")
                 
                 return redirect(url_for('home'))
             else:
@@ -1130,7 +1171,7 @@ def detect_persons_google_ai(image_bytes):
         f.write(image_bytes)
 
     api_key = os.environ.get('GEMINI_API_KEY') # Updated to GEMINI_API_KEY
-    print(f"API Key: {api_key}")
+    
     if not api_key:
         print("ERROR: GEMINI_API_KEY environment variable not set. Cannot perform person detection.")
         return False
@@ -1179,154 +1220,229 @@ def detect_persons_google_ai(image_bytes):
 
 def check_camera_for_persons(camera_id):
     """Checks camera snapshot for persons and logs/saves image on change with comprehensive logging."""
-    global cameras, person_detection_state
+    # Get the lock for this specific camera
+    camera_lock = get_camera_lock(camera_id)
     
-    current_time = time.time()
-    current_datetime = datetime.datetime.now()
-    
-    person_logger.info(f"Starting person detection check for {camera_id}")
+    # Use the lock to prevent concurrent checks of the same camera
+    with camera_lock:
+        person_logger.debug(f"Acquired detection lock for {camera_id}")
+        
+        global cameras, person_detection_state
+        
+        current_time = time.time()
+        current_datetime = datetime.datetime.now()
+        
+        person_logger.info(f"Starting person detection check for {camera_id}")
 
-    # Ensure camera config is available
-    if camera_id not in cameras:
-        person_logger.warning(f"Camera {camera_id} not found in current camera list. Attempting rescan...")
-        # Attempt a quick rescan, maybe it just connected
-        cameras = scan_for_cameras()
+        # Ensure camera config is available
         if camera_id not in cameras:
-            person_logger.error(f"Camera {camera_id} still not found after rescan. Skipping detection check.")
+            person_logger.warning(f"Camera {camera_id} not found in current camera list. Attempting rescan...")
+            # Attempt a quick rescan, maybe it just connected
+            cameras = scan_for_cameras()
+            if camera_id not in cameras:
+                person_logger.error(f"Camera {camera_id} still not found after rescan. Skipping detection check.")
+                return
+
+        camera_config = cameras[camera_id]
+        capture_url = camera_config.get('capture_url')
+
+        if not capture_url:
+            person_logger.error(f"Capture URL not configured for {camera_id}. Skipping detection check.")
             return
 
-    camera_config = cameras[camera_id]
-    capture_url = camera_config.get('capture_url')
+        # Initialize state if not present
+        if camera_id not in person_detection_state:
+            person_detection_state[camera_id] = {
+                'person_present': False,
+                'last_detection': None,
+                'first_detection': None,
+                'detection_count': 0,
+                'session_start': None,
+                'total_detection_time': 0,
+                'last_check_time': current_time,
+                'last_image_save_time': None  # Track when we last saved an image
+            }
+            person_logger.info(f"Initialized detection state for {camera_id}")
 
-    if not capture_url:
-        person_logger.error(f"Capture URL not configured for {camera_id}. Skipping detection check.")
-        return
+        state = person_detection_state[camera_id]
+        was_present = state['person_present']
+        is_present = False
+        image_bytes = None
 
-    # Initialize state if not present
-    if camera_id not in person_detection_state:
-        person_detection_state[camera_id] = {
-            'person_present': False,
-            'last_detection': None,
-            'first_detection': None,
-            'detection_count': 0,
-            'session_start': None,
-            'total_detection_time': 0,
-            'last_check_time': current_time
-        }
-        person_logger.info(f"Initialized detection state for {camera_id}")
+        # Log check attempt
+        person_logger.debug(f"Fetching snapshot from {camera_id} at {capture_url}")
 
-    state = person_detection_state[camera_id]
-    was_present = state['person_present']
-    is_present = False
-    image_bytes = None
-
-    # Log check attempt
-    person_logger.debug(f"Fetching snapshot from {camera_id} at {capture_url}")
-
-    # Fetch the snapshot
-    snapshot_start_time = time.time()
-    try:
-        resp = requests.get(capture_url, timeout=5)
-        snapshot_duration = time.time() - snapshot_start_time
-        
-        if resp.status_code == 200:
-            image_bytes = resp.content
-            person_logger.debug(f"Successfully fetched snapshot from {camera_id} ({len(image_bytes)} bytes in {snapshot_duration:.2f}s)")
-        else:
-            person_logger.error(f"HTTP {resp.status_code} error getting snapshot from {camera_id} ({capture_url})")
+        # Fetch the snapshot
+        snapshot_start_time = time.time()
+        try:
+            resp = requests.get(capture_url, timeout=5)
+            snapshot_duration = time.time() - snapshot_start_time
+            
+            if resp.status_code == 200:
+                image_bytes = resp.content
+                person_logger.debug(f"Successfully fetched snapshot from {camera_id} ({len(image_bytes)} bytes in {snapshot_duration:.2f}s)")
+            else:
+                person_logger.error(f"HTTP {resp.status_code} error getting snapshot from {camera_id} ({capture_url})")
+                return # Cannot proceed without image
+        except requests.exceptions.RequestException as e:
+            snapshot_duration = time.time() - snapshot_start_time
+            person_logger.error(f"Network error fetching snapshot for {camera_id} after {snapshot_duration:.2f}s: {e}")
             return # Cannot proceed without image
-    except requests.exceptions.RequestException as e:
-        snapshot_duration = time.time() - snapshot_start_time
-        person_logger.error(f"Network error fetching snapshot for {camera_id} after {snapshot_duration:.2f}s: {e}")
-        return # Cannot proceed without image
 
-    if image_bytes:
-        # Call detection function
-        detection_start_time = time.time()
-        person_logger.debug(f"Running AI person detection for {camera_id}")
-        
-        is_present = detect_persons_google_ai(image_bytes)
-        
-        detection_duration = time.time() - detection_start_time
-        person_logger.debug(f"AI detection completed for {camera_id} in {detection_duration:.2f}s - Result: {'PERSON DETECTED' if is_present else 'NO PERSON'}")
-
-        # Update statistics
-        time_since_last_check = current_time - state['last_check_time']
-        state['last_check_time'] = current_time
-
-        # Compare with previous state and handle state changes
-        if is_present and not was_present:
-            # Person just appeared
-            state['person_present'] = True
-            state['first_detection'] = current_time
-            state['last_detection'] = current_time
-            state['detection_count'] += 1
-            state['session_start'] = current_time
+        if image_bytes:
+            # Call detection function
+            detection_start_time = time.time()
+            person_logger.info(f"Running AI person detection for {camera_id}")
             
-            person_logger.info(f"🚶 PERSON DETECTED on {camera_id} - Session #{state['detection_count']} started")
-            person_logger.info(f"Detection timing - Snapshot: {snapshot_duration:.2f}s, AI: {detection_duration:.2f}s, Total: {snapshot_duration + detection_duration:.2f}s")
+            is_present = detect_persons_google_ai(image_bytes)
             
-            # Create directory if it doesn't exist
-            if not os.path.exists(PERSON_IMAGE_DIR):
-                try:
-                    os.makedirs(PERSON_IMAGE_DIR)
-                    person_logger.info(f"Created detection images directory: {PERSON_IMAGE_DIR}")
-                except OSError as e:
-                    person_logger.error(f"Failed to create directory {PERSON_IMAGE_DIR}: {e}")
-                    return
-            
-            # Generate unique filename
-            unique_id = uuid.uuid4()
-            timestamp = current_datetime.strftime("%Y%m%d_%H%M%S")
-            filename = f"{PERSON_IMAGE_DIR}/{camera_id}_{timestamp}_{unique_id}.jpg"
+            detection_duration = time.time() - detection_start_time
+            person_logger.info(f"AI detection completed for {camera_id} in {detection_duration:.2f}s - Result: {'PERSON DETECTED' if is_present else 'NO PERSON'}")
 
-            # Save the image
-            try:
-                with open(filename, 'wb') as f:
-                    f.write(image_bytes)
-                person_logger.info(f"💾 Saved detection image: {filename} ({len(image_bytes)} bytes)")
-            except IOError as e:
-                person_logger.error(f"Failed to save detection image {filename}: {e}")
+            # Update statistics
+            time_since_last_check = current_time - state['last_check_time']
+            state['last_check_time'] = current_time
 
-        elif not is_present and was_present:
-            # Person just disappeared
-            if state['session_start']:
-                session_duration = current_time - state['session_start']
-                state['total_detection_time'] += session_duration
+            # Compare with previous state and handle state changes
+            if is_present and not was_present:
+                # Person just appeared
+                state['person_present'] = True
+                state['first_detection'] = current_time
+                state['last_detection'] = current_time
+                state['detection_count'] += 1
+                state['session_start'] = current_time
                 
-                person_logger.info(f"🚶‍♂️ PERSON LEFT {camera_id} - Session duration: {session_duration:.1f}s ({session_duration/60:.1f} minutes)")
-                person_logger.info(f"📊 Camera {camera_id} stats - Total sessions: {state['detection_count']}, Total time: {state['total_detection_time']:.1f}s ({state['total_detection_time']/60:.1f} minutes)")
-            
-            state['person_present'] = False
-            state['session_start'] = None
-            
-        elif is_present and was_present:
-            # Person still present - update last detection time
-            state['last_detection'] = current_time
-            if state['session_start']:
-                current_session_duration = current_time - state['session_start']
-                person_logger.debug(f"👁️ Person still present on {camera_id} - Current session: {current_session_duration:.1f}s")
-        else:
-            # No person detected and none was present before
-            person_logger.debug(f"👀 No person detected on {camera_id} - Status unchanged")
+                person_logger.info(f"a PERSON DETECTED on {camera_id} - Session #{state['detection_count']} started")
+                person_logger.info(f"Detection timing - Snapshot: {snapshot_duration:.2f}s, AI: {detection_duration:.2f}s, Total: {snapshot_duration + detection_duration:.2f}s")
+                
+                # Always save image when person first appears
+                should_save_image = True
+                save_reason = "Person first detected"
+                
+            elif not is_present and was_present:
+                # Person just disappeared
+                if state['session_start']:
+                    session_duration = current_time - state['session_start']
+                    state['total_detection_time'] += session_duration
+                    
+                    person_logger.info(f"🚶‍♂️ PERSON LEFT {camera_id} - Session duration: {session_duration:.1f}s ({session_duration/60:.1f} minutes)")
+                    person_logger.info(f"📊 Camera {camera_id} stats - Total sessions: {state['detection_count']}, Total time: {state['total_detection_time']:.1f}s ({state['total_detection_time']/60:.1f} minutes)")
+                
+                state['person_present'] = False
+                state['session_start'] = None
+                should_save_image = False  # Don't save when person leaves
+                
+            elif is_present and was_present:
+                # Person still present - update last detection time
+                state['last_detection'] = current_time
+                if state['session_start']:
+                    current_session_duration = current_time - state['session_start']
+                    person_logger.debug(f"👁️ Person still present on {camera_id} - Current session: {current_session_duration:.1f}s")
+                
+                # Check if we should save another image (rate limited)
+                last_save_time = state.get('last_image_save_time', 0)
+                time_since_last_save = current_time - (last_save_time or 0)
+                
+                if time_since_last_save >= MIN_IMAGE_SAVE_INTERVAL:
+                    should_save_image = True
+                    save_reason = f"Continuous presence - {time_since_last_save:.0f}s since last save"
+                else:
+                    should_save_image = False
+                    
+            else:
+                # No person detected and none was present before
+                person_logger.debug(f"👀 No person detected on {camera_id} - Status unchanged")
+                should_save_image = False
 
-        # Log periodic statistics (every 10th check when no one is present, or every check when someone is present)
-        if is_present or state['detection_count'] % 10 == 0:
-            if state['detection_count'] > 0:
+            # Save image if needed (when person is present and conditions are met)
+            if should_save_image and is_present:
+                # Create directory if it doesn't exist
+                if not os.path.exists(PERSON_IMAGE_DIR):
+                    try:
+                        os.makedirs(PERSON_IMAGE_DIR)
+                        person_logger.info(f"Created detection images directory: {PERSON_IMAGE_DIR}")
+                    except OSError as e:
+                        person_logger.error(f"Failed to create directory {PERSON_IMAGE_DIR}: {e}")
+                        return
+                
+                # Generate unique filename
+                unique_id = uuid.uuid4()
+                timestamp = current_datetime.strftime("%Y%m%d_%H%M%S")
+                filename = f"{PERSON_IMAGE_DIR}/{camera_id}_{timestamp}_{unique_id}.jpg"
+
+                # Save the image
+                try:
+                    with open(filename, 'wb') as f:
+                        f.write(image_bytes)
+                    state['last_image_save_time'] = current_time  # Update last save time
+                    person_logger.info(f"💾 Saved detection image: {filename} ({len(image_bytes)} bytes) - {save_reason}")
+                except IOError as e:
+                    person_logger.error(f"Failed to save detection image {filename}: {e}")
+
+            # FIXED: Log statistics with correct calculations - always show current totals when person is present
+            if is_present:
+                # When person is present, always show current statistics
+                if state['detection_count'] > 0:
+                    avg_session_time = state['total_detection_time'] / state['detection_count'] if state['detection_count'] > 0 else 0
+                    current_session_time = current_time - state['session_start'] if state['session_start'] else 0
+                    total_time_including_current = state['total_detection_time'] + current_session_time
+                    person_logger.info(f"📈 {camera_id} Statistics - Sessions: {state['detection_count']}, Current session: {current_session_time:.1f}s, Total time: {total_time_including_current:.1f}s")
+            elif state['detection_count'] % 10 == 0 and state['detection_count'] > 0:
+                # When no person present, log stats every 10th check
                 avg_session_time = state['total_detection_time'] / state['detection_count'] if state['detection_count'] > 0 else 0
                 person_logger.info(f"📈 {camera_id} Statistics - Sessions: {state['detection_count']}, Avg session: {avg_session_time:.1f}s, Total time: {state['total_detection_time']:.1f}s")
 
-    person_logger.debug(f"Completed person detection check for {camera_id}")
+        person_logger.debug(f"Completed person detection check for {camera_id} - releasing lock")
 
 def periodic_person_check():
     """Background task to periodically check cameras for persons with comprehensive logging."""
-    person_logger.info("🔄 Starting periodic person detection service")
+    # Log process information for debugging multiple instance issues
+    current_pid = os.getpid()
+    
+    if PSUTIL_AVAILABLE:
+        try:
+            current_process = psutil.Process(current_pid)
+            parent_pid = current_process.ppid()
+            
+            person_logger.info(f"🔄 Starting periodic person detection service - PID: {current_pid}, Parent PID: {parent_pid}")
+            person_logger.info(f"📋 Process command: {' '.join(current_process.cmdline())}")
+            
+            # Check for other running instances
+            try:
+                other_instances = []
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        if proc.info['name'] and 'python' in proc.info['name'].lower():
+                            cmdline = proc.info['cmdline'] or []
+                            if any('server.py' in cmd for cmd in cmdline) and proc.info['pid'] != current_pid:
+                                other_instances.append(f"PID {proc.info['pid']}: {' '.join(cmdline)}")
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                
+                if other_instances:
+                    person_logger.warning(f"⚠️ Detected {len(other_instances)} other server.py instances running!")
+                    for instance in other_instances:
+                        person_logger.warning(f"   → {instance}")
+                    person_logger.warning("⚠️ Multiple instances may cause detection cycle conflicts and inconsistent state!")
+                else:
+                    person_logger.info("✅ No other server.py instances detected - proceeding normally")
+                    
+            except Exception as e:
+                person_logger.warning(f"Could not check for other instances: {e}")
+                
+        except Exception as e:
+            person_logger.warning(f"Could not get process information: {e}")
+            person_logger.info(f"🔄 Starting periodic person detection service - PID: {current_pid}")
+    else:
+        person_logger.info(f"🔄 Starting periodic person detection service - PID: {current_pid}")
+        person_logger.info("📋 Process monitoring disabled (psutil not available)")
+    
     check_count = 0
     
     while True:
         try:
             check_count += 1
-            person_logger.info(f"🔍 Starting detection cycle #{check_count} for all cameras")
+            person_logger.info(f"🔍 Starting detection cycle #{check_count} for all cameras (PID: {current_pid})")
             
             start_time = time.time()
             
@@ -1338,9 +1454,12 @@ def periodic_person_check():
                     cameras_checked += 1
                 except Exception as camera_error:
                     person_logger.error(f"❌ Error checking {camera_id} in cycle #{check_count}: {camera_error}")
+                    # Log full traceback for debugging
+                    import traceback
+                    person_logger.error(f"📋 Full traceback: {traceback.format_exc()}")
                     
             cycle_duration = time.time() - start_time
-            person_logger.info(f"✅ Completed detection cycle #{check_count} - Checked {cameras_checked}/2 cameras in {cycle_duration:.2f}s")
+            person_logger.info(f"✅ Completed detection cycle #{check_count} - Checked {cameras_checked}/2 cameras in {cycle_duration:.2f}s (PID: {current_pid})")
             
             # Log system stats every 12 cycles (1 hour)
             if check_count % 12 == 0:
@@ -1348,16 +1467,21 @@ def periodic_person_check():
                 for camera_id, state in person_detection_state.items():
                     if state['detection_count'] > 0:
                         avg_session = state['total_detection_time'] / state['detection_count']
-                        person_logger.info(f"📈 {camera_id}: {state['detection_count']} sessions, {state['total_detection_time']:.1f}s total, {avg_session:.1f}s avg")
+                        current_session_time = time.time() - state['session_start'] if state.get('session_start') else 0
+                        total_including_current = state['total_detection_time'] + current_session_time
+                        person_logger.info(f"📈 {camera_id}: {state['detection_count']} sessions, {total_including_current:.1f}s total, {avg_session:.1f}s avg")
                     else:
                         person_logger.info(f"📈 {camera_id}: No detections recorded")
                 person_logger.info("=================================")
                         
         except Exception as e:
             person_logger.error(f"💥 Critical error in periodic person check cycle #{check_count}: {e}")
+            # Log full traceback for debugging
+            import traceback
+            person_logger.error(f"📋 Full traceback: {traceback.format_exc()}")
             
         # Wait 5 minutes (300 seconds) before next check
-        person_logger.debug(f"💤 Sleeping for 5 minutes before next detection cycle...")
+        person_logger.info(f"💤 Sleeping for 5 minutes before next detection cycle... (PID: {current_pid})")
         time.sleep(300)
 
 # Start the background thread for person detection
@@ -1495,7 +1619,43 @@ def person_detection_logs():
 # --- End Person Detection Logic ---
 
 if __name__ == '__main__':
+    # Check for multiple instances before starting
+    lock_file_path = '/tmp/camera_server.lock'
+    lock_file = None
+    
+    try:
+        lock_file = open(lock_file_path, 'w')
+        # Try to acquire exclusive lock
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        
+        print(f"✅ Acquired lock file: {lock_file_path}")
+        
+        # Register cleanup function
+        def cleanup_lock():
+            try:
+                if lock_file and not lock_file.closed:
+                    lock_file.close()
+                if os.path.exists(lock_file_path):
+                    os.unlink(lock_file_path)
+                    print(f"🧹 Cleaned up lock file: {lock_file_path}")
+            except Exception as e:
+                print(f"Warning: Could not clean up lock file: {e}")
+        
+        atexit.register(cleanup_lock)
+        
+    except (IOError, OSError) as e:
+        print(f"❌ ERROR: Another camera server instance is already running!")
+        print(f"Lock file: {lock_file_path}")
+        print(f"Error: {e}")
+        print()
+        print("To check running instances: python3 check_instances.py")
+        print("To force stop all instances: python3 check_instances.py --kill-all")
+        sys.exit(1)
+    
     print("Server running on http://localhost:8080")
+    
     # Ensure the person image directory exists on startup, though the check function also does this
     if not os.path.exists(PERSON_IMAGE_DIR):
         try:
@@ -1503,5 +1663,13 @@ if __name__ == '__main__':
             print(f"Ensured directory exists: {PERSON_IMAGE_DIR}")
         except OSError as e:
             print(f"Error creating directory {PERSON_IMAGE_DIR} on startup: {e}")
-            
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    
+    try:        
+        app.run(host='0.0.0.0', port=8080, debug=False)  # Disable debug mode when running as service
+    except KeyboardInterrupt:
+        print("\n🛑 Server stopped by user")
+    except Exception as e:
+        print(f"💥 Server error: {e}")
+    finally:
+        # Cleanup will be handled by atexit
+        pass

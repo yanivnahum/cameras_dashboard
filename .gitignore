@@ -5,3 +5,4 @@ detected_persons/*
 *.jpg
 
 image.jpg
+__pycache__/server.cpython-312.pyc
