@@ -76,6 +76,15 @@
     text-decoration: none;
     color: white;
 }
+.btn-controls {
+    background-color: #ffc107;
+    color: #212529;
+}
+.btn-controls:hover {
+    background-color: #e0a800;
+    text-decoration: none;
+    color: #212529;
+}
 .no-cameras {
     text-align: center;
     padding: 40px;
@@ -172,6 +181,7 @@ Welcome, {{ username }}!
                 <div class="camera-actions">
                     <a href="/camera/{{ camera_id }}" class="camera-action-btn btn-live">Live View</a>
                     <a href="/detected-persons/{{ camera_id }}" class="camera-action-btn btn-gallery">Person History</a>
+                    <a href="/camera/{{ camera_id }}/controls" class="camera-action-btn btn-controls">Controls</a>
                 </div>
             </div>
         {% endfor %}

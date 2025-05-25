@@ -730,6 +730,7 @@ def view_camera(camera_id):
         <div class="nav">
             <a href="/">Back to Dashboard</a>
             <a href="/detected-persons/{camera_id}">Person History</a>
+            <a href="/camera/{camera_id}/controls">Camera Controls</a>
             <a id="pause-btn" href="javascript:void(0);" 
                class="control-button pause-button {(not is_connected) and 'button-disabled' or ''}" 
                onclick="{is_connected and 'stopStream()' or ''}"
@@ -1145,6 +1146,109 @@ def check_camera(camera_id):
     # cameras[camera_id]['is_connected'] = is_connected 
 
     return {"connected": is_connected}
+
+@app.route('/camera/<camera_id>/status')
+@login_required
+def camera_status(camera_id):
+    """Get camera status parameters via /status endpoint"""
+    global cameras
+    
+    # Verify camera exists
+    if camera_id not in cameras:
+        cameras = scan_for_cameras()
+        if camera_id not in cameras:
+            return {"error": "Camera not found"}, 404
+    
+    camera_config = cameras[camera_id]
+    capture_port = camera_config.get('capture_port', 0)
+    
+    if capture_port == 0:
+        return {"error": "Capture port not configured"}, 500
+    
+    # Check if camera is connected
+    if not is_port_open('localhost', capture_port):
+        return {"error": "Camera offline"}, 503
+    
+    try:
+        status_url = f"http://localhost:{capture_port}/status"
+        resp = requests.get(status_url, timeout=5)
+        
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            return {"error": f"Camera returned status {resp.status_code}"}, 502
+            
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Connection error: {str(e)}"}, 503
+
+@app.route('/camera/<camera_id>/control', methods=['POST'])
+@login_required
+def camera_control(camera_id):
+    """Control camera parameters via /control endpoint"""
+    global cameras
+    
+    # Verify camera exists
+    if camera_id not in cameras:
+        cameras = scan_for_cameras()
+        if camera_id not in cameras:
+            return {"error": "Camera not found"}, 404
+    
+    camera_config = cameras[camera_id]
+    capture_port = camera_config.get('capture_port', 0)
+    
+    if capture_port == 0:
+        return {"error": "Capture port not configured"}, 500
+    
+    # Check if camera is connected
+    if not is_port_open('localhost', capture_port):
+        return {"error": "Camera offline"}, 503
+    
+    # Get control parameters from request
+    if request.is_json:
+        var = request.json.get('var')
+        val = request.json.get('val')
+    else:
+        var = request.form.get('var')
+        val = request.form.get('val')
+    
+    if not var or val is None:
+        return {"error": "Missing 'var' or 'val' parameter"}, 400
+    
+    try:
+        control_url = f"http://localhost:{capture_port}/control"
+        params = {'var': var, 'val': val}
+        resp = requests.get(control_url, params=params, timeout=5)
+        
+        if resp.status_code == 200:
+            return {"success": True, "var": var, "val": val}
+        else:
+            return {"error": f"Camera returned status {resp.status_code}"}, 502
+            
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Connection error: {str(e)}"}, 503
+
+@app.route('/camera/<camera_id>/controls')
+@login_required
+def camera_controls(camera_id):
+    """Display camera control panel"""
+    global cameras
+    
+    # Verify camera exists
+    if camera_id not in cameras:
+        cameras = scan_for_cameras()
+        if camera_id not in cameras:
+            flash(f"Camera {camera_id} not found.")
+            return redirect(url_for('home'))
+    
+    camera_config = cameras[camera_id]
+    capture_port = camera_config.get('capture_port', 0)
+    is_connected = is_port_open('localhost', capture_port) if capture_port > 0 else False
+    
+    return render_template('camera_controls.html',
+                         camera_id=camera_id,
+                         camera_name=camera_config.get('name', camera_id),
+                         camera_config=camera_config,
+                         is_connected=is_connected)
 
 @app.errorhandler(404)
 def page_not_found(e):
