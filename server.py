@@ -13,6 +13,7 @@ import logging
 import atexit
 import fcntl
 import sys
+import re
 
 # Optional psutil import for process monitoring
 try:
@@ -1259,6 +1260,9 @@ def page_not_found(e):
 
 # --- Person Detection Logic ---
 
+
+
+
 def detect_persons_google_ai(image_bytes):
     """
     Uses Google AI Vision API to detect persons in an image.
@@ -1267,7 +1271,7 @@ def detect_persons_google_ai(image_bytes):
         image_bytes: The image data as bytes.
 
     Returns:
-        True if a person is detected with sufficient confidence, False otherwise.
+        Tuple: (is_person_detected: bool, annotated_image_bytes: bytes)
     """
 
     # save image_bytes to a file
@@ -1278,7 +1282,7 @@ def detect_persons_google_ai(image_bytes):
     
     if not api_key:
         print("ERROR: GEMINI_API_KEY environment variable not set. Cannot perform person detection.")
-        return False
+        return False, image_bytes
 
     try:
         client = genai.Client(
@@ -1287,39 +1291,101 @@ def detect_persons_google_ai(image_bytes):
 
         file = client.files.upload(file='image.jpg')
         response = client.models.generate_content(
-            model='gemini-2.0-flash-001',
-            contents=["Is there a person clearly visible in this image? Answer with only 'yes' or 'no'.", file]
+            model='gemini-2.5-flash-preview-05-20',
+            contents=["Look carefully at this image."
+                      "Is there a human person clearly and unambiguously visible?"
+                      "Only answer 'yes' if you are highly confident (90%+ certain) that there is a human being present."
+                      "If there is any doubt, unclear shapes, shadows, or objects that might be mistaken for a person, answer 'no'."
+                      "Answer with 'yes' or 'no'."
+                      "if yes respond for each person with [age=#: what is the person doing?] for example [age=25: walking] [age=50: sitting on the couch]", file]
         )
-        print(response.text)
+        person_logger.info(f"Gemini AI response for person detection: {response.text}")
         
+        # Decode the image to add text overlay
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            person_logger.error("Failed to decode image for annotation")
+            return False, image_bytes
 
         # Parse the response
         if response.text:
-            answer = response.text.strip().lower()
+            answer = response.text.strip()
             print(f"Gemini AI response for person detection: '{answer}'")
-            if 'yes' in answer:
+            
+            # Add timestamp to the image
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cv2.putText(image, timestamp, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            
+            # Add AI response to the image
+            response_lines = []
+            if 'yes' in answer.lower():
                 print("Person detected by Gemini AI.")
-                return True
-            elif 'no' in answer:
+                response_lines.append("PERSON DETECTED")
+                # Extract additional details if present
+                if '[' in answer and ']' in answer:
+                    # Split response into lines for better display
+                    details = answer.replace('[', '\n[').replace('] [', ']\n[')
+                    for line in details.split('\n'):
+                        if line.strip() and '[' in line:
+                            response_lines.append(line.strip())
+                is_detected = True
+            elif 'no' in answer.lower():
                 print("No person detected by Gemini AI.")
-                return False
+                response_lines.append("NO PERSON DETECTED")
+                is_detected = False
             else:
                 print(f"Unexpected response from Gemini AI: {response.text}")
-                return False
+                response_lines.append("UNCLEAR RESPONSE")
+                response_lines.append(answer[:50] + "..." if len(answer) > 50 else answer)
+                is_detected = False
+            
+            # Add response text to image
+            y_offset = 60
+            for line in response_lines:
+                cv2.putText(image, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if is_detected else (0, 0, 255), 2, cv2.LINE_AA)
+                y_offset += 25
+            
+            # Encode the annotated image back to bytes
+            ret, buffer = cv2.imencode('.jpg', image)
+            if ret:
+                annotated_image_bytes = buffer.tobytes()
+                return is_detected, annotated_image_bytes
+            else:
+                person_logger.error("Failed to encode annotated image")
+                return is_detected, image_bytes
+                
         else:
             print("Empty response from Gemini AI.")
-            return False
+            # Add "No Response" text to image
+            cv2.putText(image, "NO AI RESPONSE", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+            ret, buffer = cv2.imencode('.jpg', image)
+            if ret:
+                annotated_image_bytes = buffer.tobytes()
+                return False, annotated_image_bytes
+            return False, image_bytes
 
     except Exception as e:
         print(f"Error during Google AI person detection: {e}")
         # Log the full error for debugging if needed
-        # import traceback
-        # print(traceback.format_exc())
-        return False
-
-    # Fallback if not implemented or error
-    # print("WARN: Person detection logic using google-genai encountered an issue or an unexpected response.")
-    # return False # Covered by the try-except block
+        import traceback
+        person_logger.error(f"Full traceback: {traceback.format_exc()}")
+        
+        # Try to add error message to image
+        try:
+            np_arr = np.frombuffer(image_bytes, np.uint8)
+            image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if image is not None:
+                cv2.putText(image, "AI ERROR", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+                cv2.putText(image, str(e)[:50], (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+                ret, buffer = cv2.imencode('.jpg', image)
+                if ret:
+                    return False, buffer.tobytes()
+        except:
+            pass
+        
+        return False, image_bytes
 
 
 def check_camera_for_persons(camera_id):
@@ -1398,10 +1464,13 @@ def check_camera_for_persons(camera_id):
             detection_start_time = time.time()
             person_logger.info(f"Running AI person detection for {camera_id}")
             
-            is_present = detect_persons_google_ai(image_bytes)
+            is_present, annotated_image_bytes = detect_persons_google_ai(image_bytes)
             
             detection_duration = time.time() - detection_start_time
             person_logger.info(f"AI detection completed for {camera_id} in {detection_duration:.2f}s - Result: {'PERSON DETECTED' if is_present else 'NO PERSON'}")
+            
+            if is_present:
+                person_logger.info(f"Detected person(s)")
 
             # Update statistics
             time_since_last_check = current_time - state['last_check_time']
@@ -1474,12 +1543,14 @@ def check_camera_for_persons(camera_id):
                 timestamp = current_datetime.strftime("%Y%m%d_%H%M%S")
                 filename = f"{PERSON_IMAGE_DIR}/{camera_id}_{timestamp}_{unique_id}.jpg"
 
-                # Save the image
+                # Save the annotated image (with AI response overlay)
+                image_to_save = annotated_image_bytes
                 try:
                     with open(filename, 'wb') as f:
-                        f.write(image_bytes)
+                        f.write(image_to_save)
                     state['last_image_save_time'] = current_time  # Update last save time
-                    person_logger.info(f"💾 Saved detection image: {filename} ({len(image_bytes)} bytes) - {save_reason}")
+                    
+                    person_logger.info(f"💾 Saved detection image: {filename} ({len(image_to_save)} bytes) - {save_reason}")
                 except IOError as e:
                     person_logger.error(f"Failed to save detection image {filename}: {e}")
 
