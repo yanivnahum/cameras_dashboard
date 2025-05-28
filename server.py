@@ -1289,9 +1289,13 @@ def detect_persons_google_ai(image_bytes):
             api_key=api_key,
         )
 
+        # model = 'gemini-2.5-flash-preview-05-20'
+        model_name = 'gemma-3-27b-it'
+
+
         file = client.files.upload(file='image.jpg')
         response = client.models.generate_content(
-            model='gemini-2.5-flash-preview-05-20',
+            model=model_name,
             contents=["Look carefully at this image."
                       "Is there a human person clearly and unambiguously visible?"
                       "Only answer 'yes' if you are highly confident (90%+ certain) that there is a human being present."
