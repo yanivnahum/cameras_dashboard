@@ -70,11 +70,17 @@
         font-size: 0.95rem;
     }
     
-    .image-filename {
-        color: #666;
-        font-size: 0.85rem;
-        font-family: 'Courier New', monospace;
-        word-break: break-all;
+    .image-response {
+        color: #333;
+        font-size: 0.9rem;
+        line-height: 1.4;
+        background: #f8f9fa;
+        padding: 0.5rem;
+        border-radius: 4px;
+        border-left: 3px solid #007bff;
+        margin-top: 0.5rem;
+        white-space: pre-wrap;
+        word-wrap: break-word;
     }
     
     .no-images {
@@ -119,6 +125,21 @@
     
     .nav-link.secondary:hover {
         background: #545b62;
+    }
+    
+    .nav-link.danger {
+        background: #dc3545;
+    }
+    
+    .nav-link.danger:hover {
+        background: #c82333;
+    }
+    
+    .nav-link.disabled {
+        background: #6c757d;
+        opacity: 0.6;
+        cursor: not-allowed;
+        pointer-events: none;
     }
     
     .modal {
@@ -183,6 +204,11 @@
     <a href="{{ url_for('home') }}" class="nav-link">← Back to Dashboard</a>
     <a href="{{ url_for('view_camera', camera_id=camera_id) }}" class="nav-link secondary">{{ camera_name }} Live View</a>
     <a href="{{ url_for('person_detection_logs') }}" class="nav-link secondary">📊 Detection Logs</a>
+    {% if image_count > 0 %}
+        <a href="javascript:void(0);" onclick="confirmDeleteAll()" class="nav-link danger" id="delete-all-btn">🗑️ Delete All Images</a>
+    {% else %}
+        <span class="nav-link disabled">🗑️ Delete All Images</span>
+    {% endif %}
 </div>
 
 <div class="gallery-header">
@@ -217,7 +243,7 @@
                         {{ image.formatted_time }}
                     {% endif %}
                 </div>
-                <div class="image-filename">{{ image.filename }}</div>
+                <div class="image-response">{{ image.response_text }}</div>
             </div>
         </div>
         {% endfor %}
@@ -339,6 +365,63 @@ document.addEventListener('DOMContentLoaded', function() {
         console.log('Person gallery will auto-refresh every 5 minutes to show new detections.');
     }
 });
+
+// Delete all images functionality
+function confirmDeleteAll() {
+    const imageCount = {{ image_count }};
+    const cameraName = "{{ camera_name }}";
+    
+    if (imageCount === 0) {
+        alert('No images to delete.');
+        return;
+    }
+    
+    const message = `Are you sure you want to delete ALL ${imageCount} person detection image${imageCount !== 1 ? 's' : ''} for ${cameraName}?\n\nThis action cannot be undone.`;
+    
+    if (confirm(message)) {
+        deleteAllImages();
+    }
+}
+
+function deleteAllImages() {
+    const deleteBtn = document.getElementById('delete-all-btn');
+    const originalText = deleteBtn.textContent;
+    
+    // Disable button and show loading state
+    deleteBtn.textContent = '⏳ Deleting...';
+    deleteBtn.classList.add('disabled');
+    deleteBtn.removeAttribute('onclick');
+    
+    // Make the delete request
+    fetch('/detected-persons/{{ camera_id }}/delete-all', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(`Successfully deleted ${data.deleted_count} file${data.deleted_count !== 1 ? 's' : ''}!`);
+            // Reload the page to show the empty gallery
+            location.reload();
+        } else {
+            alert(`Error: ${data.message || 'Failed to delete images'}`);
+            // Restore button state
+            deleteBtn.textContent = originalText;
+            deleteBtn.classList.remove('disabled');
+            deleteBtn.setAttribute('onclick', 'confirmDeleteAll()');
+        }
+    })
+    .catch(error => {
+        console.error('Error deleting images:', error);
+        alert('Error deleting images. Please try again.');
+        // Restore button state
+        deleteBtn.textContent = originalText;
+        deleteBtn.classList.remove('disabled');
+        deleteBtn.setAttribute('onclick', 'confirmDeleteAll()');
+    });
+}
 </script>
 </div> <!-- Close gallery-container -->
 {% endblock %} 

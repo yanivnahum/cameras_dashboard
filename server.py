@@ -1271,7 +1271,7 @@ def detect_persons_google_ai(image_bytes):
         image_bytes: The image data as bytes.
 
     Returns:
-        Tuple: (is_person_detected: bool, annotated_image_bytes: bytes)
+        Tuple: (is_person_detected: bool, annotated_image_bytes: bytes, response_text: str)
     """
 
     # save image_bytes to a file
@@ -1282,15 +1282,15 @@ def detect_persons_google_ai(image_bytes):
     
     if not api_key:
         print("ERROR: GEMINI_API_KEY environment variable not set. Cannot perform person detection.")
-        return False, image_bytes
+        return False, image_bytes, "ERROR: GEMINI_API_KEY not set"
 
     try:
         client = genai.Client(
             api_key=api_key,
         )
 
-        # model = 'gemini-2.5-flash-preview-05-20'
-        model_name = 'gemma-3-27b-it'
+        model_name = 'gemini-2.5-flash-preview-05-20'
+        #model_name = 'gemma-3-27b-it'
 
 
         file = client.files.upload(file='image.jpg')
@@ -1311,7 +1311,7 @@ def detect_persons_google_ai(image_bytes):
         
         if image is None:
             person_logger.error("Failed to decode image for annotation")
-            return False, image_bytes
+            return False, image_bytes, "ERROR: Failed to decode image"
 
         # Parse the response
         if response.text:
@@ -1355,10 +1355,10 @@ def detect_persons_google_ai(image_bytes):
             ret, buffer = cv2.imencode('.jpg', image)
             if ret:
                 annotated_image_bytes = buffer.tobytes()
-                return is_detected, annotated_image_bytes
+                return is_detected, annotated_image_bytes, answer
             else:
                 person_logger.error("Failed to encode annotated image")
-                return is_detected, image_bytes
+                return is_detected, image_bytes, answer
                 
         else:
             print("Empty response from Gemini AI.")
@@ -1367,14 +1367,16 @@ def detect_persons_google_ai(image_bytes):
             ret, buffer = cv2.imencode('.jpg', image)
             if ret:
                 annotated_image_bytes = buffer.tobytes()
-                return False, annotated_image_bytes
-            return False, image_bytes
+                return False, annotated_image_bytes, "No response from AI"
+            return False, image_bytes, "No response from AI"
 
     except Exception as e:
         print(f"Error during Google AI person detection: {e}")
         # Log the full error for debugging if needed
         import traceback
         person_logger.error(f"Full traceback: {traceback.format_exc()}")
+        
+        error_message = f"AI Error: {str(e)}"
         
         # Try to add error message to image
         try:
@@ -1385,11 +1387,11 @@ def detect_persons_google_ai(image_bytes):
                 cv2.putText(image, str(e)[:50], (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
                 ret, buffer = cv2.imencode('.jpg', image)
                 if ret:
-                    return False, buffer.tobytes()
+                    return False, buffer.tobytes(), error_message
         except:
             pass
         
-        return False, image_bytes
+        return False, image_bytes, error_message
 
 
 def check_camera_for_persons(camera_id):
@@ -1468,7 +1470,7 @@ def check_camera_for_persons(camera_id):
             detection_start_time = time.time()
             person_logger.info(f"Running AI person detection for {camera_id}")
             
-            is_present, annotated_image_bytes = detect_persons_google_ai(image_bytes)
+            is_present, annotated_image_bytes, response_text = detect_persons_google_ai(image_bytes)
             
             detection_duration = time.time() - detection_start_time
             person_logger.info(f"AI detection completed for {camera_id} in {detection_duration:.2f}s - Result: {'PERSON DETECTED' if is_present else 'NO PERSON'}")
@@ -1546,17 +1548,24 @@ def check_camera_for_persons(camera_id):
                 unique_id = uuid.uuid4()
                 timestamp = current_datetime.strftime("%Y%m%d_%H%M%S")
                 filename = f"{PERSON_IMAGE_DIR}/{camera_id}_{timestamp}_{unique_id}.jpg"
+                response_filename = f"{PERSON_IMAGE_DIR}/{camera_id}_{timestamp}_{unique_id}.txt"
 
                 # Save the annotated image (with AI response overlay)
                 image_to_save = annotated_image_bytes
                 try:
                     with open(filename, 'wb') as f:
                         f.write(image_to_save)
+                    
+                    # Save the Gemini response text
+                    with open(response_filename, 'w', encoding='utf-8') as f:
+                        f.write(response_text)
+                    
                     state['last_image_save_time'] = current_time  # Update last save time
                     
                     person_logger.info(f"💾 Saved detection image: {filename} ({len(image_to_save)} bytes) - {save_reason}")
+                    person_logger.info(f"💾 Saved AI response: {response_filename} - {response_text[:100]}{'...' if len(response_text) > 100 else ''}")
                 except IOError as e:
-                    person_logger.error(f"Failed to save detection image {filename}: {e}")
+                    person_logger.error(f"Failed to save detection files {filename}: {e}")
 
             # FIXED: Log statistics with correct calculations - always show current totals when person is present
             if is_present:
@@ -1701,11 +1710,25 @@ def person_gallery(camera_id):
                         # Parse timestamp: YYYYMMDD_HHMMSS
                         timestamp = datetime.datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
                         
+                        # Try to read the corresponding response text file
+                        response_text = "Response not available"
+                        response_filename = filename.replace('.jpg', '.txt')
+                        response_file_path = os.path.join(PERSON_IMAGE_DIR, response_filename)
+                        
+                        try:
+                            if os.path.exists(response_file_path):
+                                with open(response_file_path, 'r', encoding='utf-8') as f:
+                                    response_text = f.read().strip()
+                        except Exception as e:
+                            print(f"Error reading response file {response_filename}: {e}")
+                            response_text = "Error reading response"
+                        
                         images.append({
                             'filename': filename,
                             'timestamp': timestamp,
                             'unix_timestamp': int(timestamp.timestamp()),  # Add Unix timestamp for JS
-                            'formatted_time': timestamp.strftime("%Y-%m-%d %H:%M:%S")  # Keep for fallback
+                            'formatted_time': timestamp.strftime("%Y-%m-%d %H:%M:%S"),  # Keep for fallback
+                            'response_text': response_text
                         })
                 except (ValueError, IndexError) as e:
                     print(f"Error parsing timestamp from {filename}: {e}")
@@ -1714,7 +1737,8 @@ def person_gallery(camera_id):
                         'filename': filename,
                         'timestamp': None,
                         'unix_timestamp': None,
-                        'formatted_time': 'Unknown'
+                        'formatted_time': 'Unknown',
+                        'response_text': 'Response not available'
                     })
         except OSError as e:
             print(f"Error reading detected persons directory: {e}")
@@ -1794,6 +1818,59 @@ def person_detection_logs():
                          log_count=len(logs),
                          current_states=current_states,
                          server_timezone_offset=server_timezone_offset)
+
+@app.route('/detected-persons/<camera_id>/delete-all', methods=['POST'])
+@login_required
+def delete_all_person_images(camera_id):
+    """Delete all detected person images for a specific camera"""
+    global cameras
+    
+    # Verify camera exists
+    if camera_id not in cameras:
+        cameras = scan_for_cameras()
+        if camera_id not in cameras:
+            return {"error": "Camera not found"}, 404
+    
+    if not os.path.exists(PERSON_IMAGE_DIR):
+        return {"success": True, "message": "No images to delete", "deleted_count": 0}
+    
+    try:
+        all_files = os.listdir(PERSON_IMAGE_DIR)
+        # Filter files for this camera (both .jpg and .txt files)
+        camera_files = [f for f in all_files if f.startswith(f"{camera_id}_")]
+        
+        deleted_count = 0
+        errors = []
+        
+        for filename in camera_files:
+            file_path = os.path.join(PERSON_IMAGE_DIR, filename)
+            try:
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                    deleted_count += 1
+                    person_logger.info(f"Deleted detection file: {filename} (requested by {session['username']})")
+            except OSError as e:
+                error_msg = f"Failed to delete {filename}: {str(e)}"
+                errors.append(error_msg)
+                person_logger.error(error_msg)
+        
+        if errors:
+            return {
+                "success": False, 
+                "message": f"Deleted {deleted_count} files, but encountered {len(errors)} errors",
+                "deleted_count": deleted_count,
+                "errors": errors
+            }, 207  # Multi-status
+        else:
+            return {
+                "success": True,
+                "message": f"Successfully deleted {deleted_count} files",
+                "deleted_count": deleted_count
+            }
+            
+    except OSError as e:
+        person_logger.error(f"Error accessing detection directory: {e}")
+        return {"error": f"Error accessing detection directory: {str(e)}"}, 500
 
 # --- End Person Detection Logic ---
 
