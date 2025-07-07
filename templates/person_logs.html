@@ -237,12 +237,17 @@
 <div class="navigation">
     <a href="{{ url_for('home') }}" class="nav-link">← Back to Dashboard</a>
     <a href="{{ url_for('person_detection_logs') }}" class="nav-link secondary">🔄 Refresh Logs</a>
+    <a href="{{ url_for('ai_config') }}" class="nav-link secondary">🤖 AI Config</a>
 </div>
 
 <div class="logs-header">
     <h1>📊 Person Detection Logs</h1>
     <div class="logs-stats">
-        {{ log_count }} recent log entries
+        {{ log_count }} recent log entries | 
+        <span style="color: #007bff; font-weight: 600;">🤖 AI Model: {{ ai_model_type.upper() }}</span>
+        {% if ai_model_type == 'local_gemma3' %}
+            | <span style="color: #28a745; font-weight: 600;">🏠 Local Server: {{ local_gemma3_url }}</span>
+        {% endif %}
     </div>
 </div>
 

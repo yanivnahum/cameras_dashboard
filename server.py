@@ -14,6 +14,7 @@ import atexit
 import fcntl
 import sys
 import re
+import json
 
 # Optional psutil import for process monitoring
 try:
@@ -92,6 +93,48 @@ LOCKOUT_DURATION = 600
 
 # Directory for saving person detection images
 PERSON_IMAGE_DIR = 'detected_persons'
+
+# AI Model Configuration
+AI_MODEL_TYPE = os.environ.get('AI_MODEL_TYPE', 'gemini')  # 'gemini' or 'local_gemma3'
+LOCAL_GEMMA3_URL = os.environ.get('LOCAL_GEMMA3_URL', 'https://geospotx.com')  # Your local Gemma3 server URL
+LOCAL_GEMMA3_API_KEY = os.environ.get('LOCAL_GEMMA3_API_KEY', '')  # API key if required
+
+# Configuration file for persistent settings
+CONFIG_FILE = 'ai_config.json'
+
+def load_ai_config():
+    """Load AI configuration from file"""
+    global AI_MODEL_TYPE, LOCAL_GEMMA3_URL, LOCAL_GEMMA3_API_KEY
+    
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                AI_MODEL_TYPE = config.get('ai_model_type', AI_MODEL_TYPE)
+                LOCAL_GEMMA3_URL = config.get('local_gemma3_url', LOCAL_GEMMA3_URL)
+                LOCAL_GEMMA3_API_KEY = config.get('local_gemma3_api_key', LOCAL_GEMMA3_API_KEY)
+                print(f"Loaded AI configuration: Model={AI_MODEL_TYPE}, URL={LOCAL_GEMMA3_URL}")
+        else:
+            print(f"AI config file not found, using defaults: Model={AI_MODEL_TYPE}")
+    except Exception as e:
+        print(f"Error loading AI configuration: {e}, using defaults")
+
+def save_ai_config():
+    """Save AI configuration to file"""
+    try:
+        config = {
+            'ai_model_type': AI_MODEL_TYPE,
+            'local_gemma3_url': LOCAL_GEMMA3_URL,
+            'local_gemma3_api_key': LOCAL_GEMMA3_API_KEY
+        }
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+        print(f"Saved AI configuration: Model={AI_MODEL_TYPE}")
+    except Exception as e:
+        print(f"Error saving AI configuration: {e}")
+
+# Load configuration on startup
+load_ai_config()
 
 # State for person detection
 # Stores {'camera_id': {'person_present': bool, 'last_detection': timestamp, 'first_detection': timestamp, 'detection_count': int}}
@@ -1260,8 +1303,157 @@ def page_not_found(e):
 
 # --- Person Detection Logic ---
 
+def detect_persons_local_gemma3(image_bytes):
+    """
+    Uses local Gemma3 model via OpenWebUI API to detect persons in an image.
 
+    Args:
+        image_bytes: The image data as bytes.
 
+    Returns:
+        Tuple: (is_person_detected: bool, annotated_image_bytes: bytes, response_text: str)
+    """
+    # Save image_bytes to a file
+    with open('image.jpg', 'wb') as f:
+        f.write(image_bytes)
+
+    if not LOCAL_GEMMA3_URL:
+        print("ERROR: LOCAL_GEMMA3_URL environment variable not set. Cannot perform person detection.")
+        return False, image_bytes, "ERROR: LOCAL_GEMMA3_URL not set"
+
+    try:
+        # Prepare the image for base64 encoding
+        import base64
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Prepare the request payload for OpenWebUI API
+        payload = {
+            "model": "gemma3:latest",  # Model name for OpenWebUI
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Look carefully at this image. Is there a human person clearly and unambiguously visible? Only answer 'yes' if you are highly confident (90%+ certain) that there is a human being present. If there is any doubt, unclear shapes, shadows, or objects that might be mistaken for a person, answer 'no'. Answer with 'yes' or 'no'. If yes respond for each person with [age=#: what is the person doing?] for example [age=25: walking] [age=50: sitting on the couch]"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "stream": False,
+            "temperature": 0.1,
+            "max_tokens": 500
+        }
+
+        # Prepare headers
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        
+        # Add API key if provided
+        if LOCAL_GEMMA3_API_KEY:
+            headers['Authorization'] = f'Bearer {LOCAL_GEMMA3_API_KEY}'
+
+        # Make request to local Gemma3 server
+        api_url = f"{LOCAL_GEMMA3_URL}/api/chat/completions"
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=30)
+        
+        if resp.status_code == 200:
+            response_data = resp.json()
+            response_text = response_data['choices'][0]['message']['content'].strip()
+            person_logger.info(f"Local Gemma3 response for person detection: {response_text}")
+        else:
+            error_msg = f"HTTP {resp.status_code} error from local Gemma3 server: {resp.text}"
+            person_logger.error(error_msg)
+            return False, image_bytes, error_msg
+
+        # Decode the image to add text overlay
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            person_logger.error("Failed to decode image for annotation")
+            return False, image_bytes, "ERROR: Failed to decode image"
+
+        # Parse the response
+        if response_text:
+            answer = response_text.strip()
+            print(f"Local Gemma3 response for person detection: '{answer}'")
+            
+            # Add timestamp to the image
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cv2.putText(image, timestamp, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            
+            # Add AI response to the image
+            response_lines = []
+            if 'yes' in answer.lower():
+                print("Person detected by Local Gemma3.")
+                response_lines.append("PERSON DETECTED (Local Gemma3)")
+                # Extract additional details if present
+                if '[' in answer and ']' in answer:
+                    # Split response into lines for better display
+                    details = answer.replace('[', '\n[').replace('] [', ']\n[')
+                    for line in details.split('\n'):
+                        if line.strip() and '[' in line:
+                            response_lines.append(line.strip())
+                is_detected = True
+            elif 'no' in answer.lower():
+                print("No person detected by Local Gemma3.")
+                response_lines.append("NO PERSON DETECTED (Local Gemma3)")
+                is_detected = False
+            else:
+                print(f"Unexpected response from Local Gemma3: {response_text}")
+                response_lines.append("UNCLEAR RESPONSE (Local Gemma3)")
+                response_lines.append(answer[:50] + "..." if len(answer) > 50 else answer)
+                is_detected = False
+            
+            # Encode the annotated image back to bytes
+            ret, buffer = cv2.imencode('.jpg', image)
+            if ret:
+                annotated_image_bytes = buffer.tobytes()
+                return is_detected, annotated_image_bytes, answer
+            else:
+                person_logger.error("Failed to encode annotated image")
+                return is_detected, image_bytes, answer
+                
+        else:
+            print("Empty response from Local Gemma3.")
+            # Add "No Response" text to image
+            cv2.putText(image, "NO AI RESPONSE (Local Gemma3)", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+            ret, buffer = cv2.imencode('.jpg', image)
+            if ret:
+                annotated_image_bytes = buffer.tobytes()
+                return False, annotated_image_bytes, "No response from Local Gemma3"
+            return False, image_bytes, "No response from Local Gemma3"
+
+    except Exception as e:
+        print(f"Error during Local Gemma3 person detection: {e}")
+        # Log the full error for debugging if needed
+        import traceback
+        person_logger.error(f"Full traceback: {traceback.format_exc()}")
+        
+        error_message = f"Local Gemma3 Error: {str(e)}"
+        
+        # Try to add error message to image
+        try:
+            np_arr = np.frombuffer(image_bytes, np.uint8)
+            image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if image is not None:
+                cv2.putText(image, "LOCAL GEMMA3 ERROR", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+                cv2.putText(image, str(e)[:50], (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+                ret, buffer = cv2.imencode('.jpg', image)
+                if ret:
+                    return False, buffer.tobytes(), error_message
+        except:
+            pass
+        
+        return False, image_bytes, error_message
 
 def detect_persons_google_ai(image_bytes):
     """
@@ -1289,8 +1481,9 @@ def detect_persons_google_ai(image_bytes):
             api_key=api_key,
         )
 
-        model_name = 'gemini-2.5-flash-preview-05-20'
+        #model_name = 'gemini-2.5-flash-preview-05-20'
         #model_name = 'gemma-3-27b-it'
+        model_name = 'gemini-2.0-flash'
 
 
         file = client.files.upload(file='image.jpg')
@@ -1326,7 +1519,7 @@ def detect_persons_google_ai(image_bytes):
             response_lines = []
             if 'yes' in answer.lower():
                 print("Person detected by Gemini AI.")
-                response_lines.append("PERSON DETECTED")
+                response_lines.append("PERSON DETECTED (Gemini)")
                 # Extract additional details if present
                 if '[' in answer and ']' in answer:
                     # Split response into lines for better display
@@ -1337,19 +1530,13 @@ def detect_persons_google_ai(image_bytes):
                 is_detected = True
             elif 'no' in answer.lower():
                 print("No person detected by Gemini AI.")
-                response_lines.append("NO PERSON DETECTED")
+                response_lines.append("NO PERSON DETECTED (Gemini)")
                 is_detected = False
             else:
                 print(f"Unexpected response from Gemini AI: {response.text}")
-                response_lines.append("UNCLEAR RESPONSE")
+                response_lines.append("UNCLEAR RESPONSE (Gemini)")
                 response_lines.append(answer[:50] + "..." if len(answer) > 50 else answer)
                 is_detected = False
-            
-            # Add response text to image
-            y_offset = 60
-            for line in response_lines:
-                cv2.putText(image, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if is_detected else (0, 0, 255), 2, cv2.LINE_AA)
-                y_offset += 25
             
             # Encode the annotated image back to bytes
             ret, buffer = cv2.imencode('.jpg', image)
@@ -1363,12 +1550,12 @@ def detect_persons_google_ai(image_bytes):
         else:
             print("Empty response from Gemini AI.")
             # Add "No Response" text to image
-            cv2.putText(image, "NO AI RESPONSE", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(image, "NO AI RESPONSE (Gemini)", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
             ret, buffer = cv2.imencode('.jpg', image)
             if ret:
                 annotated_image_bytes = buffer.tobytes()
-                return False, annotated_image_bytes, "No response from AI"
-            return False, image_bytes, "No response from AI"
+                return False, annotated_image_bytes, "No response from Gemini AI"
+            return False, image_bytes, "No response from Gemini AI"
 
     except Exception as e:
         print(f"Error during Google AI person detection: {e}")
@@ -1376,14 +1563,14 @@ def detect_persons_google_ai(image_bytes):
         import traceback
         person_logger.error(f"Full traceback: {traceback.format_exc()}")
         
-        error_message = f"AI Error: {str(e)}"
+        error_message = f"Gemini AI Error: {str(e)}"
         
         # Try to add error message to image
         try:
             np_arr = np.frombuffer(image_bytes, np.uint8)
             image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if image is not None:
-                cv2.putText(image, "AI ERROR", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+                cv2.putText(image, "GEMINI AI ERROR", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
                 cv2.putText(image, str(e)[:50], (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
                 ret, buffer = cv2.imencode('.jpg', image)
                 if ret:
@@ -1393,6 +1580,22 @@ def detect_persons_google_ai(image_bytes):
         
         return False, image_bytes, error_message
 
+def detect_persons(image_bytes):
+    """
+    Unified person detection function that chooses between Gemini and local Gemma3 based on configuration.
+    
+    Args:
+        image_bytes: The image data as bytes.
+        
+    Returns:
+        Tuple: (is_person_detected: bool, annotated_image_bytes: bytes, response_text: str)
+    """
+    if AI_MODEL_TYPE == 'local_gemma3':
+        person_logger.info("Using Local Gemma3 for person detection")
+        return detect_persons_local_gemma3(image_bytes)
+    else:
+        person_logger.info("Using Google Gemini for person detection")
+        return detect_persons_google_ai(image_bytes)
 
 def check_camera_for_persons(camera_id):
     """Checks camera snapshot for persons and logs/saves image on change with comprehensive logging."""
@@ -1470,7 +1673,7 @@ def check_camera_for_persons(camera_id):
             detection_start_time = time.time()
             person_logger.info(f"Running AI person detection for {camera_id}")
             
-            is_present, annotated_image_bytes, response_text = detect_persons_google_ai(image_bytes)
+            is_present, annotated_image_bytes, response_text = detect_persons(image_bytes)
             
             detection_duration = time.time() - detection_start_time
             person_logger.info(f"AI detection completed for {camera_id} in {detection_duration:.2f}s - Result: {'PERSON DETECTED' if is_present else 'NO PERSON'}")
@@ -1817,7 +2020,54 @@ def person_detection_logs():
                          logs=logs, 
                          log_count=len(logs),
                          current_states=current_states,
-                         server_timezone_offset=server_timezone_offset)
+                         server_timezone_offset=server_timezone_offset,
+                         ai_model_type=AI_MODEL_TYPE,
+                         local_gemma3_url=LOCAL_GEMMA3_URL)
+
+@app.route('/ai-config')
+@login_required
+def ai_config():
+    """Display and manage AI model configuration"""
+    return render_template('ai_config.html',
+                         ai_model_type=AI_MODEL_TYPE,
+                         local_gemma3_url=LOCAL_GEMMA3_URL,
+                         gemini_api_key_set=bool(os.environ.get('GEMINI_API_KEY')),
+                         local_gemma3_api_key_set=bool(LOCAL_GEMMA3_API_KEY))
+
+@app.route('/ai-config/update', methods=['POST'])
+@login_required
+def update_ai_config():
+    """Update AI model configuration"""
+    global AI_MODEL_TYPE, LOCAL_GEMMA3_URL, LOCAL_GEMMA3_API_KEY
+    
+    new_model_type = request.form.get('ai_model_type', 'gemini')
+    new_local_url = request.form.get('local_gemma3_url', 'https://geospotx.com')
+    new_api_key = request.form.get('local_gemma3_api_key', '')
+    
+    # Validate model type
+    if new_model_type not in ['gemini', 'local_gemma3']:
+        flash('Invalid AI model type selected.')
+        return redirect(url_for('ai_config'))
+    
+    # Validate URL format
+    if new_model_type == 'local_gemma3':
+        if not new_local_url.startswith(('http://', 'https://')):
+            flash('Local Gemma3 URL must start with http:// or https://')
+            return redirect(url_for('ai_config'))
+    
+    # Update configuration
+    AI_MODEL_TYPE = new_model_type
+    LOCAL_GEMMA3_URL = new_local_url
+    LOCAL_GEMMA3_API_KEY = new_api_key
+    
+    # Save configuration to file
+    save_ai_config()
+    
+    # Log the configuration change
+    person_logger.info(f"AI configuration updated by {session['username']}: Model={AI_MODEL_TYPE}, URL={LOCAL_GEMMA3_URL}")
+    
+    flash(f'AI configuration updated successfully. Now using {AI_MODEL_TYPE.upper()} model.')
+    return redirect(url_for('ai_config'))
 
 @app.route('/detected-persons/<camera_id>/delete-all', methods=['POST'])
 @login_required

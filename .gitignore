@@ -6,3 +6,4 @@ detected_persons/*
 
 image.jpg
 __pycache__/server.cpython-312.pyc
+ai_config.json

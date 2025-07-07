@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Model Configuration - Camera Server</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            margin: 0;
+            font-size: 2.5rem;
+            font-weight: 300;
+        }
+        
+        .header p {
+            margin: 10px 0 0 0;
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .config-section {
+            margin-bottom: 40px;
+            padding: 25px;
+            border: 2px solid #e8f4fd;
+            border-radius: 12px;
+            background: #fafbfc;
+        }
+        
+        .config-section h2 {
+            margin: 0 0 20px 0;
+            color: #2c3e50;
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .model-option {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            margin: 10px 0;
+            border: 2px solid #e1e8ed;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: white;
+        }
+        
+        .model-option:hover {
+            border-color: #4facfe;
+            box-shadow: 0 4px 12px rgba(79, 172, 254, 0.15);
+        }
+        
+        .model-option.selected {
+            border-color: #4facfe;
+            background: #f0f8ff;
+        }
+        
+        .model-option input[type="radio"] {
+            margin-right: 15px;
+            transform: scale(1.2);
+        }
+        
+        .model-info {
+            flex: 1;
+        }
+        
+        .model-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        
+        .model-description {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+        
+        .status-indicator {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-available {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-unavailable {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        
+        .form-group input[type="text"], 
+        .form-group input[type="url"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e1e8ed;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+            box-sizing: border-box;
+        }
+        
+        .form-group input[type="text"]:focus, 
+        .form-group input[type="url"]:focus {
+            outline: none;
+            border-color: #4facfe;
+            box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.1);
+        }
+        
+        .form-group input[type="password"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e1e8ed;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+            box-sizing: border-box;
+        }
+        
+        .form-group input[type="password"]:focus {
+            outline: none;
+            border-color: #4facfe;
+            box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.1);
+        }
+        
+        .help-text {
+            font-size: 0.85rem;
+            color: #7f8c8d;
+            margin-top: 5px;
+            line-height: 1.4;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+        }
+        
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 172, 254, 0.3);
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+            transform: translateY(-2px);
+        }
+        
+        .current-config {
+            background: #e8f5e8;
+            border: 2px solid #28a745;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .current-config h3 {
+            margin: 0 0 15px 0;
+            color: #155724;
+            font-size: 1.2rem;
+        }
+        
+        .config-detail {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #d4edda;
+        }
+        
+        .config-detail:last-child {
+            border-bottom: none;
+        }
+        
+        .config-label {
+            font-weight: 600;
+            color: #155724;
+        }
+        
+        .config-value {
+            color: #155724;
+            font-family: monospace;
+            background: #d4edda;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        
+        .flash-message {
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        
+        .flash-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .flash-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .nav-links {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e1e8ed;
+            text-align: center;
+        }
+        
+        .nav-links a {
+            color: #4facfe;
+            text-decoration: none;
+            margin: 0 15px;
+            font-weight: 600;
+            transition: color 0.3s ease;
+        }
+        
+        .nav-links a:hover {
+            color: #2c3e50;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+                border-radius: 10px;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .button-group {
+                flex-direction: column;
+            }
+            
+            .config-detail {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 AI Model Configuration</h1>
+            <p>Configure which AI model to use for person detection</p>
+        </div>
+        
+        <div class="content">
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    {% for message in messages %}
+                        <div class="flash-message flash-success">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            
+            <div class="current-config">
+                <h3>📊 Current Configuration</h3>
+                <div class="config-detail">
+                    <span class="config-label">Active Model:</span>
+                    <span class="config-value">{{ ai_model_type.upper() }}</span>
+                </div>
+                {% if ai_model_type == 'local_gemma3' %}
+                <div class="config-detail">
+                    <span class="config-label">Local Server URL:</span>
+                    <span class="config-value">{{ local_gemma3_url }}</span>
+                </div>
+                {% endif %}
+                <div class="config-detail">
+                    <span class="config-label">Gemini API Key:</span>
+                    <span class="config-value">{{ "✅ Set" if gemini_api_key_set else "❌ Not Set" }}</span>
+                </div>
+                <div class="config-detail">
+                    <span class="config-label">Local API Key:</span>
+                    <span class="config-value">{{ "✅ Set" if local_gemma3_api_key_set else "❌ Not Set" }}</span>
+                </div>
+            </div>
+            
+            <form method="POST" action="{{ url_for('update_ai_config') }}">
+                <div class="config-section">
+                    <h2>🔧 Model Selection</h2>
+                    
+                    <div class="model-option {% if ai_model_type == 'gemini' %}selected{% endif %}">
+                        <input type="radio" id="gemini" name="ai_model_type" value="gemini" {% if ai_model_type == 'gemini' %}checked{% endif %}>
+                        <div class="model-info">
+                            <div class="model-name">Google Gemini AI</div>
+                            <div class="model-description">
+                                Uses Google's Gemini 2.0 Flash model for person detection. Requires GEMINI_API_KEY environment variable.
+                                Provides high accuracy and fast response times.
+                            </div>
+                        </div>
+                        <span class="status-indicator {% if gemini_api_key_set %}status-available{% else %}status-unavailable{% endif %}">
+                            {{ "Available" if gemini_api_key_set else "No API Key" }}
+                        </span>
+                    </div>
+                    
+                    <div class="model-option {% if ai_model_type == 'local_gemma3' %}selected{% endif %}">
+                        <input type="radio" id="local_gemma3" name="ai_model_type" value="local_gemma3" {% if ai_model_type == 'local_gemma3' %}checked{% endif %}>
+                        <div class="model-info">
+                            <div class="model-name">Local Gemma3 (OpenWebUI)</div>
+                            <div class="model-description">
+                                Uses your local Gemma3 model running on OpenWebUI. Provides privacy and no external API costs.
+                                Requires a running OpenWebUI server with Gemma3 model loaded.
+                            </div>
+                        </div>
+                        <span class="status-indicator status-available">Local</span>
+                    </div>
+                </div>
+                
+                <div class="config-section" id="local-config" style="display: {% if ai_model_type == 'local_gemma3' %}block{% else %}none{% endif %};">
+                    <h2>🏠 Local Gemma3 Configuration</h2>
+                    
+                    <div class="form-group">
+                        <label for="local_gemma3_url">OpenWebUI Server URL:</label>
+                        <input type="url" id="local_gemma3_url" name="local_gemma3_url" 
+                               value="{{ local_gemma3_url }}" 
+                               placeholder="https://geospotx.com">
+                        <div class="help-text">
+                            The URL where your OpenWebUI server is running. Should include the protocol (http:// or https://).
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="local_gemma3_api_key">API Key (Optional):</label>
+                        <input type="password" id="local_gemma3_api_key" name="local_gemma3_api_key" 
+                               value="{{ local_gemma3_api_key if local_gemma3_api_key_set else '' }}" 
+                               placeholder="Leave empty if no API key is required"
+                               autocomplete="off">
+                        <div class="help-text">
+                            If your OpenWebUI server requires authentication, enter the API key here.
+                            Leave empty if no authentication is required.
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="button-group">
+                    <button type="submit" class="btn btn-primary">
+                        💾 Save Configuration
+                    </button>
+                    <a href="{{ url_for('home') }}" class="btn btn-secondary">
+                        🏠 Back to Dashboard
+                    </a>
+                </div>
+            </form>
+            
+            <div class="nav-links">
+                <a href="{{ url_for('person_detection_logs') }}">📋 View Detection Logs</a>
+                <a href="{{ url_for('home') }}">📊 Dashboard</a>
+                <a href="{{ url_for('logout') }}">🚪 Logout</a>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Show/hide local configuration based on model selection
+        document.addEventListener('DOMContentLoaded', function() {
+            const modelOptions = document.querySelectorAll('input[name="ai_model_type"]');
+            const localConfig = document.getElementById('local-config');
+            
+            function toggleLocalConfig() {
+                const selectedModel = document.querySelector('input[name="ai_model_type"]:checked').value;
+                localConfig.style.display = selectedModel === 'local_gemma3' ? 'block' : 'none';
+            }
+            
+            modelOptions.forEach(option => {
+                option.addEventListener('change', toggleLocalConfig);
+            });
+            
+            // Initial state
+            toggleLocalConfig();
+        });
+    </script>
+</body>
+</html> 
