@@ -454,8 +454,28 @@ def camera_snapshot(camera_id):
         
         if resp.status_code == 200:
             content_type = resp.headers.get('content-type', 'image/jpeg') # Default to jpeg
-            # Return the image content directly
-            return Response(resp.content, content_type=content_type)
+            # Apply per-camera rotation to snapshot if configured
+            image_bytes = resp.content
+            try:
+                np_arr = np.frombuffer(image_bytes, np.uint8)
+                image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if image is not None:
+                    rotation = camera_settings.get(camera_id, {}).get('rotation', 'none')
+                    if rotation == '180':
+                        image = cv2.rotate(image, cv2.ROTATE_180)
+                    elif rotation == '90_right':
+                        image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+                    elif rotation == '90_left':
+                        image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+                    ret, buffer = cv2.imencode('.jpg', image)
+                    if ret:
+                        image_bytes = buffer.tobytes()
+                        content_type = 'image/jpeg'
+            except Exception:
+                pass
+
+            return Response(image_bytes, content_type=content_type)
         else:
             print(f"Error {resp.status_code} getting snapshot from {capture_url} for {camera_id}")
             return redirect(url_for('placeholder_image'))
@@ -1745,6 +1765,24 @@ def check_camera_for_persons(camera_id):
             detection_start_time = time.time()
             person_logger.info(f"Running AI person detection for {camera_id}")
             
+            # Apply per-camera rotation to the raw snapshot before AI detection to keep orientation consistent
+            try:
+                np_arr = np.frombuffer(image_bytes, np.uint8)
+                snapshot_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if snapshot_image is not None:
+                    rotation = camera_settings.get(camera_id, {}).get('rotation', 'none')
+                    if rotation == '180':
+                        snapshot_image = cv2.rotate(snapshot_image, cv2.ROTATE_180)
+                    elif rotation == '90_right':
+                        snapshot_image = cv2.rotate(snapshot_image, cv2.ROTATE_90_CLOCKWISE)
+                    elif rotation == '90_left':
+                        snapshot_image = cv2.rotate(snapshot_image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                    ret, buffer = cv2.imencode('.jpg', snapshot_image)
+                    if ret:
+                        image_bytes = buffer.tobytes()
+            except Exception:
+                pass
+
             is_present, annotated_image_bytes, response_text = detect_persons(image_bytes)
             
             detection_duration = time.time() - detection_start_time
