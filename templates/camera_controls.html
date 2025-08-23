@@ -186,6 +186,17 @@
                 <div class="control-group">
                     <h3>📷 Image Settings</h3>
                     <div class="control-item">
+                        <label>Stream Rotation:</label>
+                        <select id="rotation">
+                            <option value="none">None</option>
+                            <option value="90_left">90° Left</option>
+                            <option value="90_right">90° Right</option>
+                            <option value="180">180°</option>
+                        </select>
+                        <button onclick="setRotation(document.getElementById('rotation').value)">Apply</button>
+                        <span class="current-value" id="rotation-current">{{ rotation }}</span>
+                    </div>
+                    <div class="control-item">
                         <label>Frame Size:</label>
                         <select id="framesize">
                             <option value="0">96x96</option>
@@ -374,17 +385,26 @@
             loadingIndicator.style.display = 'block';
             controlsGrid.style.display = 'none';
 
-            fetch(`/camera/${cameraId}/status`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        showMessage(`Error loading status: ${data.error}`, 'error');
+            Promise.all([
+                fetch(`/camera/${cameraId}/status`).then(r => r.json()),
+                fetch(`/camera/${cameraId}/rotation`).then(r => r.json())
+            ])
+                .then(([statusData, rotationData]) => {
+                    if (statusData.error) {
+                        showMessage(`Error loading status: ${statusData.error}`, 'error');
                         return;
                     }
 
-                    // Update current values
-                    updateCurrentValues(data);
-                    
+                    updateCurrentValues(statusData);
+
+                    // Update rotation select/current
+                    if (rotationData && rotationData.rotation) {
+                        const rotationSelect = document.getElementById('rotation');
+                        const rotationCurrent = document.getElementById('rotation-current');
+                        rotationSelect.value = rotationData.rotation;
+                        rotationCurrent.textContent = rotationData.rotation;
+                    }
+
                     loadingIndicator.style.display = 'none';
                     controlsGrid.style.display = 'grid';
                 })
@@ -448,6 +468,27 @@
             .catch(error => {
                 console.error('Error setting parameter:', error);
                 showMessage(`Error setting ${varName}`, 'error');
+            });
+        }
+
+        function setRotation(value) {
+            fetch(`/camera/${cameraId}/rotation`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rotation: value })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    showMessage(`Error setting rotation: ${data.error}`, 'error');
+                } else {
+                    showMessage(`Rotation set to ${data.rotation}`);
+                    document.getElementById('rotation-current').textContent = data.rotation;
+                }
+            })
+            .catch(err => {
+                console.error('Error setting rotation', err);
+                showMessage('Error setting rotation', 'error');
             });
         }
 

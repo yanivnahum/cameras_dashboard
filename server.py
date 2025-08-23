@@ -240,6 +240,10 @@ cameras = {}
 active_streams = {}
 active_connections = {}
 
+# Per-camera UI/processing settings (persisted in-memory for runtime)
+camera_settings = {}
+ALLOWED_ROTATIONS = {'none', '180', '90_left', '90_right'}
+
 # Path to placeholder image
 PLACEHOLDER_PATH = os.path.join(app.static_folder, 'placeholder.svg')
 
@@ -306,6 +310,13 @@ def scan_for_cameras():
                 "capture_port": capture_port
             }
             print(f"Successfully added camera {camera_id} (Stream: {stream_port}, Capture: {capture_port})")
+
+            # Merge any stored runtime settings (e.g., rotation) for this camera
+            if camera_id in camera_settings:
+                try:
+                    available_cameras[camera_id].update(camera_settings[camera_id])
+                except Exception:
+                    pass
 
     return available_cameras
 
@@ -384,6 +395,12 @@ def home():
     for camera_id, camera_config in cameras.items():
         stream_port = camera_config.get('stream_port', 0)
         camera_config['is_connected'] = is_port_open('localhost', stream_port)
+        # Ensure runtime settings like rotation are present in the camera config for UI convenience
+        if camera_id in camera_settings:
+            try:
+                camera_config.update(camera_settings[camera_id])
+            except Exception:
+                pass
     
     return render_template(
         'dashboard.html',
@@ -950,6 +967,18 @@ def stream_proxy(camera_id):
                                     frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
                                     if frame is not None:
+                                        # Apply per-camera rotation if configured
+                                        try:
+                                            rotation = camera_settings.get(camera_id, {}).get('rotation', 'none')
+                                            if rotation == '180':
+                                                frame = cv2.rotate(frame, cv2.ROTATE_180)
+                                            elif rotation == '90_right':
+                                                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                                            elif rotation == '90_left':
+                                                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                                        except Exception:
+                                            pass
+
                                         # Calculate FPS
                                         current_time = time.time()
                                         time_diff = current_time - frame_times[conn_id]['last_time']
@@ -1288,11 +1317,53 @@ def camera_controls(camera_id):
     capture_port = camera_config.get('capture_port', 0)
     is_connected = is_port_open('localhost', capture_port) if capture_port > 0 else False
     
+    # Ensure rotation setting default exists for UI
+    if camera_id not in camera_settings:
+        camera_settings[camera_id] = {'rotation': 'none'}
+
     return render_template('camera_controls.html',
                          camera_id=camera_id,
                          camera_name=camera_config.get('name', camera_id),
                          camera_config=camera_config,
-                         is_connected=is_connected)
+                         is_connected=is_connected,
+                         rotation=camera_settings[camera_id]['rotation'])
+
+@app.route('/camera/<camera_id>/rotation', methods=['GET', 'POST'])
+@login_required
+def camera_rotation(camera_id):
+    """Get or set per-camera rotation setting for streamed frames."""
+    global cameras, camera_settings
+    # Ensure camera exists (for UX; rotation is local, but tie to known cameras)
+    if camera_id not in cameras:
+        cameras = scan_for_cameras()
+        if camera_id not in cameras:
+            return {"error": "Camera not found"}, 404
+
+    if request.method == 'GET':
+        current = camera_settings.get(camera_id, {}).get('rotation', 'none')
+        return {"rotation": current}
+
+    # POST: set rotation
+    if request.is_json:
+        rotation = request.json.get('rotation')
+    else:
+        rotation = request.form.get('rotation')
+
+    if rotation not in ALLOWED_ROTATIONS:
+        return {"error": "Invalid rotation value", "allowed": list(ALLOWED_ROTATIONS)}, 400
+
+    if camera_id not in camera_settings:
+        camera_settings[camera_id] = {}
+    camera_settings[camera_id]['rotation'] = rotation
+
+    # Reflect into cameras dict for templates if present
+    if camera_id in cameras:
+        try:
+            cameras[camera_id]['rotation'] = rotation
+        except Exception:
+            pass
+
+    return {"success": True, "rotation": rotation}
 
 @app.errorhandler(404)
 def page_not_found(e):
@@ -1335,7 +1406,8 @@ def detect_persons_local_gemma3(image_bytes):
                     "content": [
                         {
                             "type": "text",
-                            "text": "Look carefully at this image. Is there a human person clearly and unambiguously visible? Only answer 'yes' if you are highly confident (90%+ certain) that there is a human being present. If there is any doubt, unclear shapes, shadows, or objects that might be mistaken for a person, answer 'no'. Answer with 'yes' or 'no'. If yes respond for each person with [age=#: what is the person doing?] for example [age=25: walking] [age=50: sitting on the couch]"
+                            #"text": "Look carefully at this image. Is there a human person clearly and unambiguously visible? Only answer 'yes' if you are highly confident (90%+ certain) that there is a human being present. If there is any doubt, unclear shapes, shadows, or objects that might be mistaken for a person, answer 'no'. Answer with 'yes' or 'no'. If yes respond for each person with [age=#: what is the person doing?] for example [age=25: walking] [age=50: sitting on the couch]"
+                            "text": "Look carefully at this image. If the image is not totaly dark, check if there is a human person clearly and unambiguously visible? Only answer 'yes' if you are highly confident that there is a human being present. Answer with 'yes' or 'no'. If yes respond for each person with [age=#: what is the person doing?] for example [age=25: walking] [age=50: sitting on the couch]"
                         },
                         {
                             "type": "image_url",
@@ -1872,8 +1944,8 @@ def periodic_person_check():
             person_logger.error(f"📋 Full traceback: {traceback.format_exc()}")
             
         # Wait 5 minutes (300 seconds) before next check
-        person_logger.info(f"💤 Sleeping for 5 minutes before next detection cycle... (PID: {current_pid})")
-        time.sleep(300)
+        person_logger.info(f"💤 Sleeping for 1 minute before next detection cycle... (PID: {current_pid})")
+        time.sleep(60)
 
 # Start the background thread for person detection
 person_checker_thread = threading.Thread(target=periodic_person_check, daemon=True)
