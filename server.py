@@ -1404,6 +1404,10 @@ def detect_persons_local_gemma3(image_bytes):
     Returns:
         Tuple: (is_person_detected: bool, annotated_image_bytes: bytes, response_text: str)
     """
+    # Import urllib3 to suppress SSL warnings
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
     # Save image_bytes to a file
     with open('image.jpg', 'wb') as f:
         f.write(image_bytes)
@@ -1454,7 +1458,10 @@ def detect_persons_local_gemma3(image_bytes):
 
         # Make request to local Gemma3 server
         api_url = f"{LOCAL_GEMMA3_URL}/api/chat/completions"
-        resp = requests.post(api_url, json=payload, headers=headers, timeout=30)
+        # WARNING: verify=False disables SSL certificate validation
+        # This is a temporary workaround for expired certificates
+        # For production use, ensure the SSL certificate is valid
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=30, verify=False)
         
         if resp.status_code == 200:
             response_data = resp.json()
