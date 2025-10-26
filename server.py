@@ -101,6 +101,7 @@ LOCAL_GEMMA3_API_KEY = os.environ.get('LOCAL_GEMMA3_API_KEY', '')  # API key if 
 
 # Configuration file for persistent settings
 CONFIG_FILE = 'ai_config.json'
+CAMERA_SETTINGS_FILE = 'camera_settings.json'
 
 def load_ai_config():
     """Load AI configuration from file"""
@@ -133,8 +134,117 @@ def save_ai_config():
     except Exception as e:
         print(f"Error saving AI configuration: {e}")
 
-# Load configuration on startup
-load_ai_config()
+def load_camera_settings():
+    """Load camera settings from file"""
+    global camera_settings, camera_control_settings
+    try:
+        if os.path.exists(CAMERA_SETTINGS_FILE):
+            with open(CAMERA_SETTINGS_FILE, 'r') as f:
+                data = json.load(f)
+                camera_settings = data.get('camera_settings', {})
+                camera_control_settings = data.get('camera_control_settings', {})
+                print(f"Loaded camera settings for {len(camera_settings)} cameras")
+                print(f"DEBUG: camera_settings = {camera_settings}")
+        else:
+            print("Camera settings file not found, starting with defaults")
+    except Exception as e:
+        print(f"Error loading camera settings: {e}, using defaults")
+
+def save_camera_settings():
+    """Save camera settings to file"""
+    try:
+        data = {
+            'camera_settings': camera_settings,
+            'camera_control_settings': camera_control_settings
+        }
+        with open(CAMERA_SETTINGS_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"Saved camera settings for {len(camera_settings)} cameras")
+    except Exception as e:
+        print(f"Error saving camera settings: {e}")
+
+def reapply_camera_controls(camera_id, capture_port):
+    """Reapply saved camera control settings when camera reconnects"""
+    global camera_control_settings
+    
+    if camera_id not in camera_control_settings:
+        return
+    
+    settings = camera_control_settings[camera_id]
+    print(f"Reapplying {len(settings)} saved control settings for {camera_id}")
+    
+    for var, val in settings.items():
+        try:
+            control_url = f"http://localhost:{capture_port}/control"
+            params = {'var': var, 'val': val}
+            resp = requests.get(control_url, params=params, timeout=2)
+            
+            if resp.status_code == 200:
+                print(f"Reapplied {var}={val} for {camera_id}")
+            else:
+                print(f"Failed to reapply {var}={val} for {camera_id}: HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"Error reapplying {var}={val} for {camera_id}: {e}")
+
+def apply_initial_camera_settings():
+    """Apply saved camera settings to all currently connected cameras on startup"""
+    global cameras
+    cameras = scan_for_cameras()
+    
+    print("Applying initial camera settings...")
+    for camera_id, camera_config in cameras.items():
+        capture_port = camera_config.get('capture_port', 0)
+        
+        if capture_port > 0 and is_port_open('localhost', capture_port):
+            print(f"Camera {camera_id} is connected, applying saved settings...")
+            reapply_camera_controls(camera_id, capture_port)
+            last_camera_connection_state[camera_id] = True
+    
+    print("Initial camera settings applied")
+
+def monitor_camera_reconnections():
+    """Background thread to monitor camera reconnections and reapply settings"""
+    global cameras, camera_control_settings, last_camera_connection_state
+    
+    time.sleep(5)  # Wait for initial startup
+    apply_initial_camera_settings()  # Apply settings on first run
+    
+    while True:
+        try:
+            cameras = scan_for_cameras()
+            
+            for camera_id, camera_config in cameras.items():
+                capture_port = camera_config.get('capture_port', 0)
+                
+                if capture_port > 0:
+                    was_connected = last_camera_connection_state.get(camera_id, False)
+                    is_connected = is_port_open('localhost', capture_port)
+                    
+                    # If camera transitioned from offline to online, reapply settings
+                    if is_connected and not was_connected:
+                        print(f"Background monitor detected camera {camera_id} reconnection")
+                        reapply_camera_controls(camera_id, capture_port)
+                    
+                    last_camera_connection_state[camera_id] = is_connected
+            
+            time.sleep(10)  # Check every 10 seconds
+            
+        except Exception as e:
+            print(f"Error in camera reconnection monitor: {e}")
+            time.sleep(30)  # Wait longer on error
+
+# Global variables - must be declared before loading settings
+cameras = {}
+active_streams = {}
+active_connections = {}
+
+# Per-camera UI/processing settings (persisted in-memory for runtime)
+camera_settings = {}
+camera_control_settings = {}
+ALLOWED_ROTATIONS = {'none', '180', '90_left', '90_right'}
+
+# Track camera connection state to detect reconnections
+last_camera_connection_state = {}
 
 # State for person detection
 # Stores {'camera_id': {'person_present': bool, 'last_detection': timestamp, 'first_detection': timestamp, 'detection_count': int}}
@@ -146,6 +256,13 @@ MIN_IMAGE_SAVE_INTERVAL = 60  # Save image at most every 60 seconds when person 
 # Per-camera locks for thread-safe person detection
 camera_detection_locks = {}
 camera_lock_creation_lock = threading.Lock()
+
+# Load configuration on startup
+load_ai_config()
+
+# Load camera settings on startup (must be called AFTER global variables are declared)
+# This loads both camera_settings and camera_control_settings from file
+load_camera_settings()
 
 def get_camera_lock(camera_id):
     """Get or create a lock for the specified camera_id in a thread-safe manner."""
@@ -235,15 +352,6 @@ def cleanup_inactive_sessions():
                 users[username]['failed_attempts'] = 0
                 print(f"Account unlocked: {username}")
 
-# Global variables
-cameras = {}
-active_streams = {}
-active_connections = {}
-
-# Per-camera UI/processing settings (persisted in-memory for runtime)
-camera_settings = {}
-ALLOWED_ROTATIONS = {'none', '180', '90_left', '90_right'}
-
 # Path to placeholder image
 PLACEHOLDER_PATH = os.path.join(app.static_folder, 'placeholder.svg')
 
@@ -312,10 +420,14 @@ def scan_for_cameras():
             print(f"Successfully added camera {camera_id} (Stream: {stream_port}, Capture: {capture_port})")
 
             # Merge any stored runtime settings (e.g., rotation) for this camera
+            print(f"DEBUG: Checking if {camera_id} in camera_settings: {camera_id in camera_settings}")
             if camera_id in camera_settings:
+                print(f"DEBUG: Merging settings for {camera_id}: {camera_settings[camera_id]}")
                 try:
                     available_cameras[camera_id].update(camera_settings[camera_id])
-                except Exception:
+                    print(f"DEBUG: After merge, {camera_id} config: {available_cameras[camera_id]}")
+                except Exception as e:
+                    print(f"DEBUG: Error merging settings: {e}")
                     pass
 
     return available_cameras
@@ -336,7 +448,7 @@ def is_port_open(host, port, timeout=1):
     finally:
         s.close()
 
-# Initial camera scan
+# Initial camera scan (must be after load_camera_settings and all function definitions)
 cameras = scan_for_cameras()
 
 # Clean up stale connections
@@ -372,6 +484,10 @@ cleanup_thread.start()
 session_cleanup_thread = threading.Thread(target=cleanup_inactive_sessions, daemon=True)
 session_cleanup_thread.start()
 
+# Start camera reconnection monitor thread
+camera_monitor_thread = threading.Thread(target=monitor_camera_reconnections, daemon=True)
+camera_monitor_thread.start()
+
 # FPS calculation variables
 frame_times = {} # Dictionary to store last frame time per camera stream
 FPS_ROLLING_AVG_COUNT = 10 # Number of frames to average FPS over
@@ -386,7 +502,8 @@ def log_request_info():
 @login_required
 def home():
     # Trigger a fresh camera scan
-    global cameras
+    global cameras, last_camera_connection_state
+    print(f"DEBUG: Before scan, camera_settings = {camera_settings}")
     cameras = scan_for_cameras()
 
     print("cameras", cameras)
@@ -394,13 +511,26 @@ def home():
     # Update camera connection status based on stream port
     for camera_id, camera_config in cameras.items():
         stream_port = camera_config.get('stream_port', 0)
+        was_connected = last_camera_connection_state.get(camera_id, False)
         camera_config['is_connected'] = is_port_open('localhost', stream_port)
+        is_now_connected = camera_config['is_connected']
+        
         # Ensure runtime settings like rotation are present in the camera config for UI convenience
         if camera_id in camera_settings:
             try:
                 camera_config.update(camera_settings[camera_id])
             except Exception:
                 pass
+        
+        # Reapply camera control settings when camera transitions from offline to online
+        if is_now_connected and not was_connected:
+            print(f"Camera {camera_id} reconnected, reapplying saved controls...")
+            capture_port = camera_config.get('capture_port', 0)
+            if capture_port > 0 and is_port_open('localhost', capture_port):
+                reapply_camera_controls(camera_id, capture_port)
+        
+        # Update last known state
+        last_camera_connection_state[camera_id] = is_now_connected
     
     return render_template(
         'dashboard.html',
@@ -1278,7 +1408,7 @@ def camera_status(camera_id):
 @login_required
 def camera_control(camera_id):
     """Control camera parameters via /control endpoint"""
-    global cameras
+    global cameras, camera_control_settings
     
     # Verify camera exists
     if camera_id not in cameras:
@@ -1313,6 +1443,12 @@ def camera_control(camera_id):
         resp = requests.get(control_url, params=params, timeout=5)
         
         if resp.status_code == 200:
+            # Save this setting to be reapplied on reconnection
+            if camera_id not in camera_control_settings:
+                camera_control_settings[camera_id] = {}
+            camera_control_settings[camera_id][var] = val
+            save_camera_settings()  # Persist to file
+            
             return {"success": True, "var": var, "val": val}
         else:
             return {"error": f"Camera returned status {resp.status_code}"}, 502
@@ -1340,6 +1476,10 @@ def camera_controls(camera_id):
     # Ensure rotation setting default exists for UI
     if camera_id not in camera_settings:
         camera_settings[camera_id] = {'rotation': 'none'}
+    
+    # Reapply saved camera control settings when camera is connected
+    if is_connected and capture_port > 0:
+        reapply_camera_controls(camera_id, capture_port)
 
     return render_template('camera_controls.html',
                          camera_id=camera_id,
@@ -1375,6 +1515,9 @@ def camera_rotation(camera_id):
     if camera_id not in camera_settings:
         camera_settings[camera_id] = {}
     camera_settings[camera_id]['rotation'] = rotation
+    
+    # Save camera settings to persist rotation
+    save_camera_settings()
 
     # Reflect into cameras dict for templates if present
     if camera_id in cameras:

@@ -1,0 +1,18 @@
+{
+  "camera_settings": {
+    "camera2": {
+      "rotation": "90_left"
+    },
+    "camera1": {
+      "rotation": "90_right"
+    }
+  },
+  "camera_control_settings": {
+    "camera2": {
+      "framesize": "13"
+    },
+    "camera1": {
+      "framesize": "13"
+    }
+  }
+}
